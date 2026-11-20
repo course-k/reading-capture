@@ -1,0 +1,25 @@
+# ビルド生成物
+build/
+.gradle/
+*.apk
+*.aab
+captures/
+.cxx/
+.externalNativeBuild/
+
+# 端末・個人の設定
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# 鍵・秘密情報
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+.env
+.env.*
+
+# 取り込んだ写真（リポジトリに入れない）
+samples/
