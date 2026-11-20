@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>読書の取り込み — 見た目の案</title>
+<style>
+  :root { --page:#eef1f4; --ink:#10161c; --sub:#5f6b76; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;
+    line-height:1.7; }
+  main { max-width:1180px; margin:0 auto; padding:40px 16px 80px; }
+  h1 { font-size:22px; font-weight:600; margin:0 0 4px; }
+  p.lead { color:var(--sub); margin:0 0 28px; font-size:15px; }
+  h2 { font-size:15px; font-weight:600; margin:40px 0 14px; color:var(--sub); letter-spacing:.04em; }
+  .row { display:flex; flex-wrap:wrap; gap:28px; }
+  figure { margin:0; }
+  figcaption { font-size:13px; color:var(--sub); margin-top:10px; max-width:300px; }
+  figcaption b { color:var(--ink); font-weight:600; }
+
+  /* ---- アプリの色（明るい表示） ---- */
+  .phone { --bg:#ffffff; --sunken:#f4f6f8; --line:#e3e8ed; --text:#10161c; --text2:#5f6b76; --text3:#94a0ab;
+    --accent:#3d8fd1; --accent-bg:#e9f3fb; --on-accent:#ffffff; --warn:#b96f12; --warn-bg:#fbf2e3; --danger:#c9544a;
+    width:300px; height:650px; border-radius:34px; background:var(--bg); color:var(--text);
+    box-shadow:0 0 0 9px #15191d, 0 18px 40px rgba(16,22,28,.18); overflow:hidden; display:flex; flex-direction:column;
+    font-size:14px; line-height:1.6; }
+  /* ---- 暗い表示 ---- */
+  .phone.dark { --bg:#111417; --sunken:#1a1e22; --line:#2a3036; --text:#e8edf1; --text2:#9aa6b1; --text3:#6b7680;
+    --accent:#6fb3e8; --accent-bg:#17304a; --on-accent:#0b1620; --warn:#e2a34d; --warn-bg:#33270f; --danger:#e58278; }
+
+  .status { height:26px; flex:none; }
+  .top { display:flex; align-items:center; padding:2px 16px 8px; gap:8px; }
+  .book { font-size:15px; font-weight:600; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .book::after { content:"▾"; color:var(--text3); margin-left:6px; font-weight:400; }
+  .cloud { font-size:12px; color:var(--text2); white-space:nowrap; }
+  .cloud.pending { color:var(--accent); }
+  .tabs { display:flex; margin:0 16px 10px; background:var(--sunken); border-radius:12px; padding:3px; }
+  .tabs span { flex:1; text-align:center; padding:7px 0; border-radius:10px; color:var(--text2); font-size:14px; }
+  .tabs span.on { background:var(--bg); color:var(--text); font-weight:600; box-shadow:0 1px 2px rgba(16,22,28,.08); }
+  .dark .tabs span.on { background:#262c32; box-shadow:none; }
+
+  /* 撮る */
+  .finder { margin:0 10px; border-radius:14px; background:#0c0e10; flex:none; height:373px; position:relative; overflow:hidden; }
+  .paper { position:absolute; inset:14px 16px; background:#e9e6df; border-radius:2px; padding:22px 20px; }
+  .paper i { display:block; height:3px; background:#8d8a84; margin:0 0 7px; border-radius:1px; opacity:.75; }
+  .paper i.s { width:62%; } .paper i.h { height:6px; width:48%; margin:4px 0 12px; background:#56534e; }
+  .paper .fig { height:62px; border:1.5px solid #8d8a84; margin:8px 0 12px; }
+  .paper .note { position:absolute; right:6px; top:60px; width:44px; }
+  .paper .note i { height:2px; margin-bottom:5px; }
+  .paper.wide { right:-6px; } .paper.wide .note { right:-8px; }
+  .chip { position:absolute; left:10px; top:10px; background:rgba(12,14,16,.62); color:#fff; font-size:12px;
+    padding:4px 10px 4px 8px; border-radius:99px; display:flex; align-items:center; gap:6px; backdrop-filter:blur(6px); }
+  .chip::before { content:""; width:7px; height:7px; border-radius:50%; background:#7fbdee; }
+  .chip.done::before { background:#7fbdee; box-shadow:0 0 0 3px rgba(127,189,238,.3); }
+  .chip.warn::before { background:#f0b35c; }
+  .edge { position:absolute; right:0; top:0; bottom:0; width:5px; background:#f0b35c; }
+  .ring { position:absolute; left:50%; top:50%; width:54px; height:54px; margin:-27px 0 0 -27px; border-radius:50%;
+    border:3px solid rgba(255,255,255,.25); border-top-color:#7fbdee; border-right-color:#7fbdee; }
+  .banner { margin:10px 10px 0; background:var(--warn-bg); color:var(--warn); border-radius:12px; padding:9px 12px;
+    display:flex; align-items:center; gap:10px; font-size:13px; }
+  .banner b { flex:1; font-weight:600; }
+  .banner button { border:1px solid currentColor; background:none; color:inherit; font:inherit; font-size:13px; border-radius:99px; padding:4px 12px; }
+  .controls { flex:1; display:flex; align-items:center; justify-content:space-between; padding:0 22px; }
+  .last { display:flex; align-items:center; gap:10px; width:96px; }
+  .thumb { width:46px; height:60px; border-radius:6px; background:#e9e6df; border:1px solid var(--line); position:relative; flex:none; }
+  .thumb.warn { outline:2px solid var(--warn); outline-offset:1px; }
+  .thumb em { position:absolute; right:-7px; top:-7px; background:var(--text); color:var(--bg); font-style:normal; font-size:11px;
+    border-radius:99px; padding:0 6px; line-height:18px; font-weight:600; }
+  .del { color:var(--text2); font-size:13px; }
+  .shutter { width:66px; height:66px; border-radius:50%; border:3px solid var(--text); display:grid; place-items:center; }
+  .shutter::after { content:""; width:52px; height:52px; border-radius:50%; background:var(--text); }
+  .light { width:96px; text-align:right; color:var(--text2); font-size:13px; }
+  .foot { text-align:center; font-size:12px; color:var(--text3); padding:0 0 14px; }
+  .foot b { color:var(--text2); font-weight:500; }
+
+  /* 話す */
+  .notes { flex:1; overflow:hidden; padding:4px 18px 0; display:flex; flex-direction:column; justify-content:flex-end; }
+  .notes h3 { font-size:12px; font-weight:500; color:var(--text3); margin:0 0 10px; }
+  .n { margin:0 0 14px; font-size:14.5px; line-height:1.75; }
+  .n small { display:block; color:var(--text3); font-size:11.5px; margin-top:2px; }
+  .n small.wait { color:var(--accent); }
+  .sec { display:flex; align-items:center; border-top:1px solid var(--line); padding:8px 8px 6px; gap:2px; }
+  .sec a { width:38px; height:38px; display:grid; place-items:center; color:var(--text2); font-size:20px; }
+  .sec div { flex:1; text-align:center; font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sec div::after { content:"▾"; color:var(--text3); margin-left:6px; font-weight:400; }
+  .input { margin:0 14px; border-radius:14px; background:var(--sunken); padding:11px 14px; min-height:74px; font-size:15px; line-height:1.7; }
+  .input.empty { color:var(--text3); }
+  .send { display:flex; justify-content:flex-end; padding:10px 14px 16px; }
+  .send button { border:0; background:var(--accent); color:var(--on-accent); font:inherit; font-size:15px; font-weight:600; border-radius:99px; padding:9px 26px; }
+  .send button.off { background:var(--sunken); color:var(--text3); }
+
+  /* 色の見本 */
+  .swatches { display:flex; flex-wrap:wrap; gap:10px; }
+  .sw { width:118px; border-radius:12px; overflow:hidden; background:#fff; font-size:12px; box-shadow:0 1px 2px rgba(16,22,28,.08); }
+  .sw i { display:block; height:44px; } .sw span { display:block; padding:6px 10px 8px; color:var(--sub); line-height:1.4; }
+  .sw span b { display:block; color:var(--ink); font-weight:600; }
+  ul.notes-list { color:var(--sub); font-size:14px; padding-left:1.2em; max-width:760px; }
+  ul.notes-list b { color:var(--ink); font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>読書の取り込み — 見た目の案</h1>
+  <p class="lead">主要な 2 画面（撮る・話す）の見た目です。決まっているのは「落ち着いた色味」まで。色・配置・言葉は、見て引っかかったところを言ってもらえれば直します。</p>
+
+  <h2>撮る</h2>
+  <div class="row">
+    <figure>
+      <div class="phone">
+        <div class="status"></div>
+        <div class="top"><div class="book">医療情報システム入門 第8版</div><div class="cloud pending">まだ 3</div></div>
+        <div class="tabs"><span class="on">撮る</span><span>話す</span></div>
+        <div class="finder">
+          <div class="paper"><i class="h"></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><div class="fig"></div><i></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i></div>
+          <div class="chip done">撮りました。めくってください</div>
+        </div>
+        <div class="controls">
+          <div class="last"><div class="thumb"><em>12</em></div><span class="del">消す</span></div>
+          <div class="shutter"></div>
+          <div class="light">ライト</div>
+        </div>
+        <div class="foot"><b>上げた 9</b> ・ まだ 3</div>
+      </div>
+      <figcaption><b>ふだんの状態。</b>カメラの映像が主役。左下が直前の 1 枚と枚数、まん中がシャッター（音量ボタンでも同じ）。撮れたら短く 1 回振動します。</figcaption>
+    </figure>
+
+    <figure>
+      <div class="phone">
+        <div class="status"></div>
+        <div class="top"><div class="book">医療情報システム入門 第8版</div><div class="cloud pending">まだ 4</div></div>
+        <div class="tabs"><span class="on">撮る</span><span>話す</span></div>
+        <div class="finder">
+          <div class="paper"><i class="h"></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="ring"></div>
+          <div class="chip">止まりました。撮ります</div>
+        </div>
+        <div class="controls">
+          <div class="last"><div class="thumb"><em>13</em></div><span class="del">消す</span></div>
+          <div class="shutter"></div>
+          <div class="light">ライト</div>
+        </div>
+        <div class="foot"><b>上げた 9</b> ・ まだ 4</div>
+      </div>
+      <figcaption><b>めくって止まったとき。</b>輪が一周するあいだ（1 秒弱）待ってから撮ります。動いているあいだは撮りません。</figcaption>
+    </figure>
+
+    <figure>
+      <div class="phone">
+        <div class="status"></div>
+        <div class="top"><div class="book">医療情報システム入門 第8版</div><div class="cloud pending">まだ 5</div></div>
+        <div class="tabs"><span class="on">撮る</span><span>話す</span></div>
+        <div class="finder" style="height:325px">
+          <div class="paper wide"><i class="h"></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="s"></i><div class="note"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="edge"></div>
+          <div class="chip warn">撮りました</div>
+        </div>
+        <div class="banner"><b>右の端に文字がかかっています</b><button>撮り直す</button></div>
+        <div class="controls">
+          <div class="last"><div class="thumb warn"><em>14</em></div><span class="del">消す</span></div>
+          <div class="shutter"></div>
+          <div class="light">ライト</div>
+        </div>
+        <div class="foot"><b>上げた 9</b> ・ まだ 5</div>
+      </div>
+      <figcaption><b>欄外が切れたとき。</b>長めに 2 回振動し、切れている側の端が色で分かります。「撮り直す」を押すと、その 1 枚を消して、本を直して止まったところでもう一度撮ります。そのまま進めても構いません。</figcaption>
+    </figure>
+
+    <figure>
+      <div class="phone dark">
+        <div class="status"></div>
+        <div class="top"><div class="book">医療情報システム入門 第8版</div><div class="cloud">上げ終わり</div></div>
+        <div class="tabs"><span class="on">撮る</span><span>話す</span></div>
+        <div class="finder">
+          <div class="paper"><i class="h"></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><div class="fig"></div><i></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i></div>
+          <div class="chip">次のページを待っています</div>
+        </div>
+        <div class="controls">
+          <div class="last"><div class="thumb"><em>21</em></div><span class="del">消す</span></div>
+          <div class="shutter"></div>
+          <div class="light">ライト</div>
+        </div>
+        <div class="foot"><b>上げた 21</b></div>
+      </div>
+      <figcaption><b>暗い表示。</b>スマホの設定（ダークモード）に合わせて切り替わります。</figcaption>
+    </figure>
+  </div>
+
+  <h2>話す</h2>
+  <div class="row">
+    <figure>
+      <div class="phone">
+        <div class="status"></div>
+        <div class="top"><div class="book">医療情報システム入門 第8版</div><div class="cloud">上げ終わり</div></div>
+        <div class="tabs"><span>撮る</span><span class="on">話す</span></div>
+        <div class="notes">
+          <h3>この節で話したこと</h3>
+          <div class="n">病院と診療所の違いは病床の数で決まっている。20 床以上が病院。<small>21:34</small></div>
+          <div class="n">特定機能病院と地域医療支援病院の役割の違いがまだはっきりしない。あとで調べる。<small>21:41</small></div>
+        </div>
+        <div class="sec"><a>‹</a><div>第2章 ／ 1 病院とは</div><a>›</a></div>
+        <div class="input empty">ここに話す</div>
+        <div class="send"><button class="off">残す</button></div>
+      </div>
+      <figcaption><b>話す前。</b>入力欄のすぐ上で章・節を選びます。‹ › で前後の節へ。選んだ節は変えるまでそのまま。</figcaption>
+    </figure>
+
+    <figure>
+      <div class="phone">
+        <div class="status"></div>
+        <div class="top"><div class="book">医療情報システム入門 第8版</div><div class="cloud pending">まだ 1</div></div>
+        <div class="tabs"><span>撮る</span><span class="on">話す</span></div>
+        <div class="notes">
+          <h3>この節で話したこと</h3>
+          <div class="n">特定機能病院と地域医療支援病院の役割の違いがまだはっきりしない。あとで調べる。<small>21:41</small></div>
+          <div class="n">医療法で病院の種類が決まっていて、機能分化という考え方がある。<small class="wait">21:48 ・ これから上げます</small></div>
+        </div>
+        <div class="sec"><a>‹</a><div>第2章 ／ 1 病院とは</div><a>›</a></div>
+        <div class="input">外来と入院で情報システムの使われ方が違うのは、関わる職種の数が違うからだと思う</div>
+        <div class="send"><button>残す</button></div>
+      </div>
+      <figcaption><b>話している途中。</b>「残す」を押すと、すぐ上に並びます。押す前にアプリを閉じても、入力欄の中身は残ります。</figcaption>
+    </figure>
+
+    <figure>
+      <div class="phone dark">
+        <div class="status"></div>
+        <div class="top"><div class="book">医療情報システム入門 第8版</div><div class="cloud">上げ終わり</div></div>
+        <div class="tabs"><span>撮る</span><span class="on">話す</span></div>
+        <div class="notes">
+          <h3>この節で話したこと</h3>
+          <div class="n">病院と診療所の違いは病床の数で決まっている。20 床以上が病院。<small>21:34</small></div>
+          <div class="n">特定機能病院と地域医療支援病院の役割の違いがまだはっきりしない。あとで調べる。<small>21:41</small></div>
+        </div>
+        <div class="sec"><a>‹</a><div>第2章 ／ 1 病院とは</div><a>›</a></div>
+        <div class="input empty">ここに話す</div>
+        <div class="send"><button class="off">残す</button></div>
+      </div>
+      <figcaption><b>暗い表示。</b></figcaption>
+    </figure>
+  </div>
+
+  <h2>色と文字の決まり</h2>
+  <div class="swatches">
+    <div class="sw"><i style="background:#ffffff;border-bottom:1px solid #e3e8ed"></i><span><b>地</b>白</span></div>
+    <div class="sw"><i style="background:#f4f6f8"></i><span><b>入力欄・切り替え</b>ごく薄いグレー</span></div>
+    <div class="sw"><i style="background:#10161c"></i><span><b>文字</b>少し青みのある黒</span></div>
+    <div class="sw"><i style="background:#5f6b76"></i><span><b>補足の文字</b>グレー</span></div>
+    <div class="sw"><i style="background:#3d8fd1"></i><span><b>差し色（1 色だけ）</b>落ち着いた青</span></div>
+    <div class="sw"><i style="background:#b96f12"></i><span><b>知らせ</b>切れ・ぶれ・暗い</span></div>
+    <div class="sw"><i style="background:#111417"></i><span><b>暗い表示の地</b>青みのある黒</span></div>
+    <div class="sw"><i style="background:#6fb3e8"></i><span><b>暗い表示の差し色</b>明るめの青</span></div>
+  </div>
+  <ul class="notes-list">
+    <li><b>色は 3 種類だけ。</b>白・黒・グレーが基調。差し色は青 1 色で、「いま押すもの」と「これから上がるもの」にだけ使います。知らせ（切れ・ぶれ・暗い）だけが別の色です。</li>
+    <li><b>線と影はほぼ無し。</b>区切りは余白と、ごく薄いグレーの面で作ります。</li>
+    <li><b>文字はスマホの標準の書体。</b>本文 15〜16、補足 12〜13。行間は広め。</li>
+    <li><b>言葉は短く。</b>状態は「撮りました。めくってください」「次のページを待っています」のように、次にすることが分かる一言にします。</li>
+    <li><b>設定は 1 画面だけ。</b>鍵を入れる欄と、つながるかの確認。本の名前を押すと、本の切り替えと一緒に出ます。</li>
+  </ul>
+</main>
+</body>
+</html>

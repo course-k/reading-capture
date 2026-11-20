@@ -35,6 +35,12 @@ class InboxUploader(
     private val maxAttempts: Int = 5,
     /** 書き込みの呼び出しのあいだにあける時間。公式の勧めは 1 秒以上 */
     private val pauseBetweenWritesMs: Long = 1000,
+    /**
+     * 載せ直す前に待つ時間（回を重ねるごとに延ばす）。
+     * GitHub は、書いた直後の読み取りに少し古い内容を返すことがある（2026-11-20 に実測）。
+     * 古い先頭の上に載せてしまっても、ブランチは進められないだけで壊れないが、待ってから読み直すほうが早く済む。
+     */
+    private val retryPauseMs: Long = 1500,
     private val sleep: (Long) -> Unit = { Thread.sleep(it) },
 ) {
 
@@ -108,7 +114,7 @@ class InboxUploader(
 
             // ほかの誰かが先にブランチを進めていた。今の中身を取り直して、その上に載せ直す
             if (attempt >= maxAttempts) throw InboxException.Unexpected(422, "取り込み箱がほかから続けて書き換えられていて、載せられません")
-            pause()
+            if (retryPauseMs > 0) sleep(retryPauseMs * attempt)
             head = client.head()
             files = client.listFiles(head.treeSha)
         }

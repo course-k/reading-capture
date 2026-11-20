@@ -20,7 +20,7 @@ class InboxUploaderTest {
     private fun client(token: String = server.validToken, repo: String = "inbox") =
         GitHubClient(http, InboxConfig("owner", repo, token, apiBase = server.baseUrl))
 
-    private fun uploader(client: GitHubClient = client()) = InboxUploader(client, pauseBetweenWritesMs = 0)
+    private fun uploader(client: GitHubClient = client()) = InboxUploader(client, pauseBetweenWritesMs = 0, retryPauseMs = 0)
 
     private fun photoBytes(seed: Int, size: Int = 300_000) = ByteArray(size).also { Random(seed.toLong()).nextBytes(it) }
 

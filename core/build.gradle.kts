@@ -18,6 +18,8 @@ tasks.test {
     // 合成した画像を作るテストは画面なしで動かす
     systemProperty("java.awt.headless", "true")
     maxHeapSize = "2g"
+    // -Psamples を付けたときだけ、エミュレーターに見せる合成の画像と映像のコマを書き出す
+    project.findProperty("samples")?.let { systemProperty("samples", it.toString()) }
     testLogging {
         events("failed")
         showStandardStreams = false
