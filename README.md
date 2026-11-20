@@ -80,6 +80,8 @@ export JAVA_HOME=/path/to/jdk17
 adb install -r app/build/outputs/apk/debug/app-debug.apk   # USB でつないだ端末に入れる
 ```
 
+`scripts/install.sh` は、ビルドして、USB でつないだ端末に入れるところまでを 1 回で行う。
+
 USB（adb）で入れるアプリは、Android の開発者確認の対象外（<https://developer.android.com/developer-verification/guides/faq>、2026-11-20 に確認）。
 
 ## テスト
@@ -100,6 +102,8 @@ USB（adb）で入れるアプリは、Android の開発者確認の対象外（
 ```sh
 adb exec-out run-as app.readingcapture cat files/diag/2026-11-20.jsonl
 ```
+
+`scripts/pull-diag.sh [年-月-日]` は、記録を取り出して、撮った回数・1 枚ごとの鮮明さと知らせ・「同じページ」と判断した回数・写真の大きさ・上げる処理のまとめを出す。
 
 撮り逃しや二度撮りが起きたときの数値を見て、`core` の `EngineConfig` / `MatcherConfig` / `QualityConfig` のしきい値を直す。設定の画面で、数値を「撮る」の画面に出すこともできる。
 
