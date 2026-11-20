@@ -18,6 +18,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
@@ -28,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,7 +84,11 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
     }
 
     // 入力欄の中身は、変わるたびに端末に書く（「残す」の前に閉じても残る）
-    var draft by remember(book.id) { mutableStateOf(container.settings.draft(book.id)) }
+    // 音声入力の文字は、キーボード経由でここに入る
+    val field = remember(book.id) { TextFieldState(container.settings.draft(book.id)) }
+    LaunchedEffect(book.id) {
+        snapshotFlow { field.text.toString() }.collect { container.settings.setDraft(book.id, it) }
+    }
 
     var showToc by remember { mutableStateOf(false) }
     var movingNote by remember { mutableStateOf<Note?>(null) }
@@ -145,11 +153,13 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                     Modifier.weight(1f).heightIn(min = 52.dp).clip(RoundedCornerShape(12.dp)).quietClickable { showToc = true }.padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Box(Modifier.weight(1f))
                     Text(
                         nav.label(pos), style = Type.labelStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center, modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.Center, modifier = Modifier.weight(8f, fill = false),
                     )
                     Text(" ▾", style = Type.small, color = c.text3)
+                    Box(Modifier.weight(1f))
                 }
                 TextAction("›", onClick = { next?.let { select(it) } }, enabled = next != null, style = Type.body.copy(fontSize = Type.body.fontSize * 1.5f))
             } else {
@@ -165,19 +175,14 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
             Modifier.fillMaxWidth().padding(horizontal = 14.dp).clip(RoundedCornerShape(14.dp)).background(c.sunken).padding(horizontal = 14.dp, vertical = 12.dp),
         ) {
             BasicTextField(
-                value = draft,
-                onValueChange = {
-                    draft = it
-                    container.settings.setDraft(book.id, it)
-                },
+                state = field,
                 textStyle = Type.body.copy(color = c.text),
                 cursorBrush = SolidColor(c.accent),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-                minLines = 3,
-                maxLines = 8,
+                lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 3, maxHeightInLines = 8),
                 modifier = Modifier.fillMaxWidth(),
-                decorationBox = { inner ->
-                    if (draft.isEmpty()) Text("ここに話す", style = Type.body, color = c.text3)
+                decorator = { inner ->
+                    if (field.text.isEmpty()) Text("ここに話す", style = Type.body, color = c.text3)
                     inner()
                 },
             )
@@ -186,7 +191,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
             Box(Modifier.weight(1f))
             PrimaryButton(
                 "残す",
-                enabled = draft.isNotBlank(),
+                enabled = field.text.isNotBlank(),
                 onClick = {
                     val now = System.currentTimeMillis()
                     val at = OffsetDateTime.ofInstant(Instant.ofEpochMilli(now), ZoneId.systemDefault())
@@ -197,11 +202,11 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                             id = id, bookId = book.id, bookTitle = book.title,
                             chapterId = chapter?.id, chapterTitle = chapter?.title,
                             sectionId = section?.id, sectionTitle = section?.title,
-                            text = draft.trim(), spokenAt = now, state = NoteState.PENDING,
+                            text = field.text.toString().trim(), spokenAt = now, state = NoteState.PENDING,
                             remotePath = InboxLayout.note(book.id, at), everUploaded = false,
                         ),
                     )
-                    draft = ""
+                    field.clearText()
                     container.settings.setDraft(book.id, "")
                     container.haptics.tick()
                     container.sync.kick()

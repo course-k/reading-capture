@@ -45,6 +45,9 @@ class PhotoProcessor(
     /** 点検で知らせることが見つかったときに呼ぶ（仕上げのスレッドから）。 */
     var onWarning: ((photoId: String, warnings: PhotoWarnings) -> Unit)? = null
 
+    /** 台帳に載っていない写真を台帳に載せる。載せられたら true を返す。 */
+    var adoptOrphan: ((photoId: String) -> Boolean?)? = null
+
     /** 1 枚の仕上げが済むたびに呼ぶ。 */
     var onProcessed: (() -> Unit)? = null
 
@@ -65,9 +68,9 @@ class PhotoProcessor(
     fun recover() {
         executor.execute {
             val known = db.photosInState(PhotoState.RAW).map { it.id }
-            for (id in known) enqueue(id, movedDuringCapture = false)
-            // 台帳に載る前に落ちた raw は、どの本のものか分からないので消す（撮れたという振動も出ていない）
-            for (id in store.rawIds()) if (id !in known && db.photo(id) == null) store.rawFile(id).delete()
+            // カメラが保存したのに台帳に載る前に落ちた写真も、捨てずに拾う（いま選んでいる本の写真として）
+            val adopted = store.rawIds().filter { it !in known && db.photo(it) == null }.mapNotNull { id -> adoptOrphan?.invoke(id)?.let { id } }
+            for (id in known + adopted) enqueue(id, movedDuringCapture = false)
         }
     }
 
@@ -136,6 +139,8 @@ class PhotoProcessor(
 
         db.markPhotoReady(id, fileName, width, height, target.length(), warnings)
         raw.delete()
+        // 仕上げのあいだに持ち主が消していたら、いま作ったファイルも片付ける
+        if (db.photo(id)?.fileName != fileName) store.deleteAll(id, fileName)
 
         diag.log(
             "photo", "id" to id, "w" to width, "h" to height, "bytes" to target.length(), "rawBytes" to row.bytes,

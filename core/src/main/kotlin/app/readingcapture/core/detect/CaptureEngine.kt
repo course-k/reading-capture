@@ -83,6 +83,10 @@ data class EngineConfig(
     val minMeanLuma: Float = 24f,
     /** 「撮り直す」のあと、動きが無くてもここまで待ったら撮る */
     val retakeTimeoutMs: Long = 2500,
+    /** 「ページらしくない」と判断したあと、動きが無くてもこの間隔で見直す（露出がゆっくり明るくなった、など） */
+    val notAPageRecheckMs: Long = 1500,
+    /** 撮る合図を出してから、ここまで待っても撮り終わりの知らせが来なければ、失敗として扱う */
+    val captureTimeoutMs: Long = 8000,
     val matcher: MatcherConfig = MatcherConfig(),
 )
 
@@ -109,6 +113,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     // 止まったあと、この基準のコマについてはもう判定を済ませた（次に動くまで何もしない）
     private var settledStatus: EngineStatus? = null
+    private var settledAtMs = 0L
 
     // 最後に撮ったページ（と、その 1 つ前）
     private val references = ArrayDeque<PageSignature>()
@@ -176,11 +181,19 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             if (retakeArmedAtMs >= 0 && timeMs - retakeArmedAtMs >= RETAKE_TAP_IGNORE_MS) retakeSawMotion = true
         }
 
-        if (pending != null) {
-            // 撮っている最中に動いたら、ぶれているかもしれない
-            if (strictBroken) movedDuringCapture = true
-            status = EngineStatus.CAPTURING
-            return result(timeMs, strictDiff, sharpness, 1f)
+        pending?.let { p ->
+            if (timeMs - p.timeMs > config.captureTimeoutMs) {
+                // 撮り終わりの知らせが来ない。撮れなかったものとして、判定に戻る
+                pending = null
+                pendingSignature = null
+                movedDuringCapture = false
+                settledStatus = null
+            } else {
+                // 撮っている最中に動いたら、ぶれているかもしれない
+                if (strictBroken) movedDuringCapture = true
+                status = EngineStatus.CAPTURING
+                return result(timeMs, strictDiff, sharpness, 1f)
+            }
         }
 
         if (timeMs - startedAtMs < config.startupGraceMs) {
@@ -190,8 +203,12 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
         // 大きく動くまでは、済ませた判定のまま（小さな揺れでは判定し直さない）
         settledStatus?.let { settled ->
-            status = settled
-            return result(timeMs, strictDiff, sharpness, 0f)
+            val recheck = settled == EngineStatus.NOT_A_PAGE && timeMs - settledAtMs >= config.notAPageRecheckMs
+            if (!recheck) {
+                status = settled
+                return result(timeMs, strictDiff, sharpness, 0f)
+            }
+            settledStatus = null
         }
 
         val strictAge = timeMs - strictSinceMs
@@ -237,6 +254,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
         if (frame.mean() < config.minMeanLuma || textured < config.minTexturedFraction) {
             settledStatus = EngineStatus.NOT_A_PAGE
+            settledAtMs = timeMs
             status = EngineStatus.NOT_A_PAGE
             return result(timeMs, strictDiff, sharpness, 0f, null, textured)
         }
@@ -325,6 +343,15 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     /** 振動させた。そのあいだの映像の揺れは、めくった動きとして数えない。 */
     fun notifyVibration(timeMs: Long, durationMs: Long) {
         blankUntilMs = maxOf(blankUntilMs, timeMs + durationMs)
+    }
+
+    /** 最後に撮ったページの、判定用の画像。アプリを開き直しても二度撮りしないよう、保存しておくのに使う。 */
+    fun lastReferenceImage(): LumaImage? = references.lastOrNull()?.image
+
+    /** 保存しておいた「最後に撮ったページ」を戻す。 */
+    fun restoreReference(image: LumaImage) {
+        references.clear()
+        references.addLast(matcher.prepare(image.copy()))
     }
 
     /** 本を切り替えた、画面を開き直した、など。覚えているページを忘れる。 */

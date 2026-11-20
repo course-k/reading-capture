@@ -9,6 +9,7 @@ import app.readingcapture.core.inbox.PhotoKind
 import app.readingcapture.core.quality.PhotoWarnings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * 端末の中の台帳。写真と話した言葉が、いまどの段階にあるかを持つ。
@@ -16,7 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
  * 写真や言葉そのものを失わないための要。書き込みはすべてここを通し、
  * 「取り込み箱に上がった」と確かめられるまで、端末の中のファイルは消さない。
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "capture.db", null, 1) {
+class Db(context: Context, name: String? = "capture.db") : SQLiteOpenHelper(context, name, null, 1) {
 
     private val _version = MutableStateFlow(0L)
 
@@ -24,7 +25,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "capture.db", null, 1) {
     val version: StateFlow<Long> = _version
 
     private fun changed() {
-        _version.value = _version.value + 1
+        _version.update { it + 1 }
     }
 
     override fun onConfigure(db: SQLiteDatabase) {

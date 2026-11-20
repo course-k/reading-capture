@@ -90,7 +90,28 @@ class CaptureController(
     private var lastNumbersAt = 0L
     private var bound = false
 
+    private val referenceFile = java.io.File(context.filesDir, "capture/last-page.bin")
+
     init {
+        // カメラが保存したのに台帳に載る前に落ちた写真を拾う
+        processor.adoptOrphan = { id ->
+            val capturedAt = id.substringBefore('-').toLongOrNull()
+            if (capturedAt == null) null else runCatching {
+                val bookId = settings.currentBookId.value ?: BookRepository.UNSORTED_ID
+                val at = OffsetDateTime.ofInstant(Instant.ofEpochMilli(capturedAt), ZoneId.systemDefault())
+                db.insertPhoto(
+                    Photo(
+                        id = id, bookId = bookId, capturedAt = capturedAt, kind = PhotoKind.CAMERA, state = PhotoState.RAW,
+                        remotePath = InboxLayout.photo(bookId, at, PhotoKind.CAMERA), fileName = null,
+                        width = 0, height = 0, bytes = store.rawFile(id).length(), warnings = PhotoWarnings(), blobSha = null, uploadedAt = null,
+                    ),
+                )
+                diag.log("adopted", "id" to id)
+                true
+            }.getOrNull()
+        }
+        // アプリを開き直しても同じページを二度撮りしないよう、最後に撮ったページを思い出す（30 分以内のものだけ）
+        analysisExecutor.execute { restoreReference() }
         processor.onWarning = { _, _ ->
             val ms = haptics.warning()
             analysisExecutor.execute { engine.notifyVibration(SystemClock.elapsedRealtime(), ms + 100) }
@@ -164,7 +185,10 @@ class CaptureController(
     /** 直前の 1 枚を消す。 */
     fun deleteLast(photo: Photo) {
         delete(photo)
-        analysisExecutor.execute { engine.onLastDeleted() }
+        analysisExecutor.execute {
+            engine.onLastDeleted()
+            saveReference()
+        }
         haptics.tick()
     }
 
@@ -193,7 +217,10 @@ class CaptureController(
 
     /** 本を切り替えた。前の本の最後のページと比べないよう、覚えているページを忘れる。 */
     fun onBookChanged() {
-        analysisExecutor.execute { engine.reset() }
+        analysisExecutor.execute {
+            engine.reset()
+            referenceFile.delete()
+        }
         processor.resetSession()
     }
 
@@ -246,6 +273,35 @@ class CaptureController(
         }
     }
 
+    /** 最後に撮ったページの、判定用の小さな画像（明るさだけ、320 画素）を書いておく。 */
+    private fun saveReference() {
+        val image = engine.lastReferenceImage() ?: return
+        runCatching {
+            referenceFile.parentFile?.mkdirs()
+            java.io.DataOutputStream(referenceFile.outputStream().buffered()).use { out ->
+                out.writeLong(System.currentTimeMillis())
+                out.writeInt(image.width)
+                out.writeInt(image.height)
+                out.write(image.data, 0, image.width * image.height)
+            }
+        }
+    }
+
+    private fun restoreReference() {
+        if (!referenceFile.exists()) return
+        runCatching {
+            java.io.DataInputStream(referenceFile.inputStream().buffered()).use { input ->
+                val savedAt = input.readLong()
+                val w = input.readInt()
+                val h = input.readInt()
+                if (System.currentTimeMillis() - savedAt > REFERENCE_MAX_AGE_MS || w !in 1..4096 || h !in 1..4096) return
+                val data = ByteArray(w * h)
+                input.readFully(data)
+                engine.restoreReference(LumaImage(w, h, data))
+            }
+        }
+    }
+
     private fun takePicture(request: CaptureRequest) {
         val capture = imageCapture
         if (capture == null) {
@@ -276,6 +332,7 @@ class CaptureController(
                     analysisExecutor.execute {
                         val now = SystemClock.elapsedRealtime()
                         val outcome = engine.onCaptureFinished(request.id, now, saved = true)
+                        saveReference()
                         // 振動は写真を撮り終えてから（撮っている最中に揺らさない）
                         val ms = haptics.captured()
                         engine.notifyVibration(now, ms + 150)
@@ -296,6 +353,7 @@ class CaptureController(
 
     companion object {
         const val WORK_LONG_SIDE = 320
+        const val REFERENCE_MAX_AGE_MS = 30 * 60_000L
 
         /** 写真の id。時刻順に並ぶ。 */
         fun newPhotoId(atMs: Long): String = "%013d-%04x".format(atMs, (Math.random() * 0xFFFF).toInt())

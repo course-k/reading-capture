@@ -348,4 +348,60 @@ class CaptureEngineTest {
         assertEquals(describe(sim), many.map { it.id as Int? }, sim.captures.pageIds())
         assertTrue(sim.captures.none { it.handPresent })
     }
+
+    @Test
+    fun `暗くてページと分からなかったあと、明るくなったら動きが無くても撮る`() {
+        // 露出がゆっくり追いつく場合。全体の明るさの変化は「動き」に数えないので、見直しが要る
+        val script = VideoScript()
+        script.hold(SceneState(pages[0], gain = 0.05f, noiseSigma = 0.5f), 3000)
+        script.animate(2000) { t -> SceneState(pages[0], gain = 0.05f + 0.95f * t) }
+        script.hold(SceneState(pages[0]), 4000)
+        val sim = run(script)
+        assertEquals(describe(sim), listOf<Int?>(1), sim.captures.pageIds())
+    }
+
+    @Test
+    fun `撮り終わりの知らせが来なくても固まらず、次のページを撮る`() {
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 12000)
+        script.turn(pages[0], pages[1])
+        script.hold(SceneState(pages[1]), 3000)
+        val engine = CaptureEngine()
+        // 1 回目の合図だけ、知らせを返さない
+        val sim = Simulation(engine, captureLatencyMs = 350)
+        var dropped = false
+        val renderer = app.readingcapture.core.synthetic.SceneRenderer()
+        val requests = ArrayList<Pair<Long, Int?>>()
+        for ((i, state) in script.frames.withIndex()) {
+            val now = i * 1000L / script.fps
+            val r = engine.onFrame(renderer.render(state, i).downsampleToLongSide(320), now)
+            r.request?.let { req ->
+                requests += now to state.truthPageId
+                if (!dropped) dropped = true else engine.onCaptureFinished(req.id, now + 1, saved = true)
+            }
+        }
+        assertTrue("固まった: $requests", requests.size >= 2)
+        assertEquals("最初の合図はページ 1", 1, requests.first().second)
+        assertTrue("知らせが来なかったあと、待ってからもう一度合図する: $requests", requests[1].first - requests[0].first >= 8000)
+        assertTrue("次のページも撮る: $requests", requests.any { it.second == 2 })
+        assertTrue(sim.captures.isEmpty())
+    }
+
+    @Test
+    fun `前回の最後のページを覚えていれば、開き直しても同じページを撮り直さない`() {
+        val first = Simulation(CaptureEngine())
+        first.run(VideoScript().hold(SceneState(pages[0]), 3000))
+        assertEquals(1, first.captures.size)
+        val saved = first.engine.lastReferenceImage()!!
+
+        val engine = CaptureEngine()
+        engine.restoreReference(saved)
+        val script = VideoScript()
+        script.hold(SceneState(pages[0], dx = 2f), 3000)
+        script.turn(pages[0], pages[1])
+        script.hold(SceneState(pages[1]), 2500)
+        val second = Simulation(engine)
+        second.run(script)
+        assertEquals(describe(second), listOf<Int?>(2), second.captures.pageIds())
+    }
 }
