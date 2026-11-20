@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 kotlin {
@@ -7,6 +8,8 @@ kotlin {
 }
 
 dependencies {
+    api(libs.okhttp)
+    api(libs.serialization.json)
     testImplementation(libs.junit)
 }
 
