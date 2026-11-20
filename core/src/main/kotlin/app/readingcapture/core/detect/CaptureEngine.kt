@@ -59,24 +59,42 @@ data class CaptureOutcome(
 data class EngineConfig(
     /** 判定に使う画像の長いほうの辺（画素） */
     val workLongSide: Int = 320,
-    /** 「ぴたりと止まっている」とみなす、変わった画素の割合の上限 */
-    val strictStrongFraction: Float = 0.004f,
-    /** 「ほぼ止まっている」（手でページを押さえている、など）とみなす上限 */
-    val looseStrongFraction: Float = 0.04f,
-    /** ぴたりと止まってから撮るまでの時間 */
-    val strictSettleMs: Long = 600,
+    /**
+     * 「止まっている」とみなす、直前のコマからの変化の上限。区画（8×8 画素）の平均が 4 段階を超えて変わった区画の割合。
+     * 本物のカメラの映像は、止まっていても 1 画素に満たない幅で揺れ続ける（ピントの微調整、手ぶれ補正、ノイズ）。
+     * 画素ごとに比べるとその揺れを「動いた」と数えてしまうので、区画の平均で比べる。
+     */
+    val stillCellFraction: Float = 0.035f,
+    /** 「止まっている」とみなす、区画の平均の変化の最大（1 か所でも大きく変われば、手や指が動いている） */
+    val stillCellMax: Float = 14f,
+    /** 「ほぼ止まっている」（手でページを押さえている、など）とみなす、変わった区画の割合の上限 */
+    val looseCellFraction: Float = 0.10f,
+    /**
+     * 止まり始めたコマから、これ以上の割合の区画が（4 段階を超えて）変わったら、まだ止まっていない。
+     * コマごとの変化は小さくても、ゆっくり動き続けている（ページの反りが戻っている途中、など）のを見分ける。
+     */
+    val driftCellFraction: Float = 0.04f,
+    /** 判定を済ませたコマから、これ以上の割合の区画が（6 段階を超えて）変わったら、判定し直す */
+    val changedCellFraction: Float = 0.05f,
+    /** 止まってから撮るまでの時間 */
+    val strictSettleMs: Long = 500,
     /** ほぼ止まっている状態が続いたら撮る、までの時間 */
     val looseSettleMs: Long = 1500,
     /** 撮り終えてから次を撮るまでに最低あける時間 */
     val refractoryMs: Long = 500,
     /** 始めてから判定を始めるまでの時間 */
     val startupGraceMs: Long = 800,
-    /** ピントが落ち着いたとみなす、鮮明さの揺れの上限（割合） */
-    val focusTolerance: Float = 0.12f,
-    /** 鮮明さの揺れを見る時間 */
-    val focusWindowMs: Long = 300,
+    /**
+     * ピントが合ったとみなす条件 1: いまの鮮明さが、止まってからの最大のこの割合以上。
+     * 本物の映像の鮮明さは、止まっていても 1〜2 割は揺れるので、揺れの幅では見ない。
+     */
+    val focusNearMax: Float = 0.8f,
+    /** ピントが合ったとみなす条件 2: 鮮明さが、直前（0.1 秒ほど前）からこの割合を超えて上がり続けていない（合わせている最中でない） */
+    val focusRising: Float = 1.12f,
+    /** 鮮明さを見る時間 */
+    val focusWindowMs: Long = 1000,
     /** ピントが落ち着かなくても、ここまで待ったら撮る */
-    val focusTimeoutMs: Long = 1800,
+    val focusTimeoutMs: Long = 1500,
     /** ページらしいとみなす、模様のある区画の割合の下限 */
     val minTexturedFraction: Float = 0.08f,
     /** 暗すぎて判定しない明るさ */
@@ -105,11 +123,15 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     private var startedAtMs = -1L
 
-    // 「止まっている」を測る基準のコマ。変化がしきい値を超えたら取り直す
-    private var strictAnchor: LumaImage? = null
+    // 直前のコマ。これと比べて「いま動いているか」を見る
+    private var prevFrame: LumaImage? = null
+    // 最後に「動いている」と見たとき
     private var strictSinceMs = 0L
-    private var looseAnchor: LumaImage? = null
     private var looseSinceMs = 0L
+    // 止まり始めたときのコマ。ここからゆっくりずれ続けていないかを見る
+    private var windowAnchor: LumaImage? = null
+    // 判定を済ませたときのコマ。ここから大きく変わったら判定し直す
+    private var evalAnchor: LumaImage? = null
 
     // 止まったあと、この基準のコマについてはもう判定を済ませた（次に動くまで何もしない）
     private var settledStatus: EngineStatus? = null
@@ -157,9 +179,9 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         val sharpness = Sharpness.gradientEnergy(frame)
         pushSharpness(timeMs, sharpness)
 
-        // 自分の振動でスマホが揺れているあいだは、基準を取り直すだけにする
+        // 自分の振動でスマホが揺れているあいだは、動きを見ない
         if (timeMs < blankUntilMs) {
-            resetAnchors(frame, timeMs)
+            resetMotion(frame, timeMs)
             wasBlank = true
             return result(timeMs, DiffStats(0f, 0f, 1f), sharpness, 0f)
         }
@@ -169,31 +191,39 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             if (pending == null) settledStatus = null
         }
 
-        val strict = strictAnchor
-        val loose = looseAnchor
-        if (strict == null || loose == null) {
-            resetAnchors(frame, timeMs)
+        val prev = prevFrame
+        if (prev == null) {
+            resetMotion(frame, timeMs)
             status = if (timeMs - startedAtMs < config.startupGraceMs) EngineStatus.STARTING else EngineStatus.MOVING
             return result(timeMs, DiffStats(0f, 0f, 1f), sharpness, 0f)
         }
 
-        val strictDiff = FrameDiff.compare(strict, frame)
-        val looseDiff = if (loose === strict) strictDiff else FrameDiff.compare(loose, frame)
-
-        val strictBroken = strictDiff.strongFraction > config.strictStrongFraction
-        val looseBroken = looseDiff.strongFraction > config.looseStrongFraction
+        // 直前のコマからどれだけ変わったか（区画の平均で比べる）
+        val velocity = CoarseDiff.compare(prev, frame)
+        prevFrame = frame
+        val cellFraction = velocity.over[CELL_4]
+        var strictBroken = cellFraction > config.stillCellFraction || velocity.max > config.stillCellMax
+        val looseBroken = cellFraction > config.looseCellFraction
+        if (!strictBroken) {
+            // コマごとには止まって見えても、止まり始めからゆっくりずれ続けていないか
+            val anchor = windowAnchor
+            if (anchor != null && CoarseDiff.compare(anchor, frame).over[CELL_4] > config.driftCellFraction) strictBroken = true
+        }
         if (strictBroken) {
-            strictAnchor = frame.copy()
             strictSinceMs = timeMs
+            windowAnchor = frame
         }
         if (looseBroken) {
-            looseAnchor = frame.copy()
             looseSinceMs = timeMs
-            // 大きく動いたので、済ませた判定は捨てる
-            settledStatus = null
             // 「撮り直す」を押した指の揺れは数えない
             if (retakeArmedAtMs >= 0 && timeMs - retakeArmedAtMs >= RETAKE_TAP_IGNORE_MS) retakeSawMotion = true
         }
+        // 判定を済ませたコマから大きく変わったら（ページをめくった、手が入った）、済ませた判定は捨てる
+        if (settledStatus != null) {
+            val anchor = evalAnchor
+            if (anchor == null || CoarseDiff.compare(anchor, frame).over[CELL_6] > config.changedCellFraction) settledStatus = null
+        }
+        val strictDiff = DiffStats(cellFraction, velocity.max, velocity.gain)
 
         pending?.let { p ->
             if (timeMs - p.timeMs > config.captureTimeoutMs) {
@@ -254,7 +284,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         }
 
         // ここで判定する
-        val signature = matcher.prepare(frame.copy())
+        val signature = matcher.prepare(frame)
         val textured = matcher.texturedFraction(signature)
 
         // 「撮り直す」を頼まれている: 同じページでも撮る
@@ -272,6 +302,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         if (frame.mean() < config.minMeanLuma || textured < config.minTexturedFraction) {
             settledStatus = EngineStatus.NOT_A_PAGE
             settledAtMs = timeMs
+            evalAnchor = frame
             status = EngineStatus.NOT_A_PAGE
             return result(timeMs, strictDiff, sharpness, 0f, null, textured)
         }
@@ -286,6 +317,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             if (match == null) match = m
             if (m.same) {
                 settledStatus = EngineStatus.WAITING_NEXT_PAGE
+                evalAnchor = frame
                 status = EngineStatus.WAITING_NEXT_PAGE
                 return result(timeMs, strictDiff, sharpness, 0f, m, textured)
             }
@@ -304,11 +336,8 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         retakeSawMotion = false
         val req = CaptureRequest(nextRequestId++, CaptureReason.MANUAL, timeMs)
         pending = req
-        pendingSignature = matcher.prepare(frame.copy())
+        pendingSignature = matcher.prepare(frame)
         movedDuringCapture = false
-        // 押した瞬間のコマを基準にして、撮っているあいだの動きを見る
-        strictAnchor = frame.copy()
-        strictSinceMs = timeMs
         status = EngineStatus.CAPTURING
         return req
     }
@@ -334,7 +363,10 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         movedDuringCapture = false
         lastCaptureFinishedMs = timeMs
         if (saved) {
-            pendingSignature?.let { pushReference(it) }
+            pendingSignature?.let {
+                pushReference(it)
+                evalAnchor = it.image
+            }
             if (moved) {
                 // 撮っているあいだにめくり始めていた。止まったら、いま映っているものを見直す
                 settledStatus = null
@@ -396,8 +428,9 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     /** 本を切り替えた、画面を開き直した、など。覚えているページを忘れる。 */
     fun reset() {
         startedAtMs = -1
-        strictAnchor = null
-        looseAnchor = null
+        prevFrame = null
+        windowAnchor = null
+        evalAnchor = null
         settledStatus = null
         references.clear()
         pending = null
@@ -414,8 +447,9 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     /** カメラを開き直した。覚えているページは残し、露出とピントの落ち着きだけ待ち直す。 */
     fun onCameraRestarted() {
         startedAtMs = -1
-        strictAnchor = null
-        looseAnchor = null
+        prevFrame = null
+        windowAnchor = null
+        evalAnchor = null
         settledStatus = null
         pending = null
         pendingSignature = null
@@ -430,6 +464,10 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     private companion object {
         const val RETAKE_TAP_IGNORE_MS = 400L
+
+        // CoarseDiff.thresholds の中の位置（4 段階・6 段階）
+        const val CELL_4 = 1
+        const val CELL_6 = 2
 
         /** 覚えておくページの数。行きつ戻りつ読んでも撮り直さないため */
         const val REMEMBERED_PAGES = 3
@@ -471,10 +509,9 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         FrameMetrics(timeMs, diff.strongFraction, diff.meanAbs, diff.gain, sharpness, match, textured),
     )
 
-    private fun resetAnchors(frame: LumaImage, timeMs: Long) {
-        val copy = frame.copy()
-        strictAnchor = copy
-        looseAnchor = copy
+    private fun resetMotion(frame: LumaImage, timeMs: Long) {
+        prevFrame = frame
+        windowAnchor = frame
         strictSinceMs = timeMs
         looseSinceMs = timeMs
     }
@@ -499,17 +536,20 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         }
     }
 
-    /** 直近の鮮明さがほぼ一定なら、ピントは動いていない。 */
+    /**
+     * ピントを合わせている最中でないか。
+     * 止まってからの鮮明さを見て、いまが最大に近く、しかも上がり続けていなければ、合っている。
+     */
     private fun focusStable(timeMs: Long): Boolean {
-        if (sharpnessValues.size < 3) return false
-        if (timeMs - sharpnessTimes.first() < config.focusWindowMs * 2 / 3) return false
-        var lo = Float.MAX_VALUE
-        var hi = 0f
-        for (v in sharpnessValues) {
-            if (v < lo) lo = v
-            if (v > hi) hi = v
-        }
-        if (hi <= 1e-3f) return true
-        return (hi - lo) / hi <= config.focusTolerance
+        val from = maxOf(strictSinceMs, timeMs - config.focusWindowMs)
+        val values = ArrayList<Float>()
+        for (i in sharpnessTimes.indices) if (sharpnessTimes[i] >= from) values += sharpnessValues[i]
+        if (values.size < 6) return false
+        val n = values.size
+        val recent = (values[n - 1] + values[n - 2] + values[n - 3]) / 3f
+        val earlier = (values[n - 4] + values[n - 5] + values[n - 6]) / 3f
+        val max = values.max()
+        if (max <= 1e-3f) return true
+        return recent >= max * config.focusNearMax && recent <= earlier * config.focusRising
     }
 }

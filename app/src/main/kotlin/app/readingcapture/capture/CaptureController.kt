@@ -87,6 +87,24 @@ class CaptureController(
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
     private var scratch = ByteArray(0)
+    // スマホ自体が動いているか（回る速さ・揺れの大きさ）。映像の変化が、スマホの揺れか、写っているものの動きかを見分ける
+    @Volatile private var gyroMax = 0f
+    @Volatile private var accelMax = 0f
+    private val motionListener = object : android.hardware.SensorEventListener {
+        override fun onSensorChanged(event: android.hardware.SensorEvent) {
+            val v = event.values
+            val m = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            if (event.sensor.type == android.hardware.Sensor.TYPE_GYROSCOPE) { if (m > gyroMax) gyroMax = m } else { if (m > accelMax) accelMax = m }
+        }
+
+        override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) = Unit
+    }
+
+    // 合わせ込み用: 映像の揺れの大きさを記録する
+    private var probePrev: LumaImage? = null
+    private var probeAnchor: LumaImage? = null
+    private var probeAnchorAt = 0L
+    private var probeLoggedAt = 0L
     private var lastPublishedProgress = -1f
     private var lastNumbersAt = 0L
     private var bound = false
@@ -124,6 +142,9 @@ class CaptureController(
     /** 「撮る」の画面を開いた。カメラをつなぐ。 */
     fun bind(owner: LifecycleOwner, previewView: PreviewView) {
         bound = true
+        val sensors = context.getSystemService(android.hardware.SensorManager::class.java)
+        sensors.getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE)?.let { sensors.registerListener(motionListener, it, android.hardware.SensorManager.SENSOR_DELAY_GAME) }
+        sensors.getDefaultSensor(android.hardware.Sensor.TYPE_LINEAR_ACCELERATION)?.let { sensors.registerListener(motionListener, it, android.hardware.SensorManager.SENSOR_DELAY_GAME) }
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             if (!bound) return@addListener
@@ -172,6 +193,7 @@ class CaptureController(
     /** 「撮る」の画面を離れた。カメラを離す（電池と熱のため）。 */
     fun unbind() {
         bound = false
+        context.getSystemService(android.hardware.SensorManager::class.java).unregisterListener(motionListener)
         provider?.unbindAll()
         camera = null
         imageCapture = null
@@ -243,6 +265,7 @@ class CaptureController(
             val (dw, dh) = LumaImage.scaledSize(w, h, WORK_LONG_SIDE)
             val frame = LumaImage.fromPlane(scratch, w, h, rowStride, plane.pixelStride, dw, dh)
             val now = SystemClock.elapsedRealtime()
+            probe(frame, now)
             val result = engine.onFrame(frame, now)
             result.request?.let { takePicture(it) }
             publish(result, now)
@@ -250,6 +273,37 @@ class CaptureController(
             diag.log("analyze_error", "error" to e.toString())
         } finally {
             proxy.close()
+        }
+    }
+
+    /**
+     * 映像がどのくらい揺れているかを、1 秒に 4 回記録する（数値だけ）。
+     * 直前のコマとの差と、1 秒前のコマとの差を、細かい比べ方（画素ごと）と粗い比べ方（区画の平均）の両方で出す。
+     */
+    private fun probe(frame: LumaImage, now: Long) {
+        val prev = probePrev
+        val anchor = probeAnchor
+        if (prev != null && anchor != null && now - probeLoggedAt >= 250) {
+            probeLoggedAt = now
+            val fine = app.readingcapture.core.detect.FrameDiff.compare(prev, frame)
+            val fineA = app.readingcapture.core.detect.FrameDiff.compare(anchor, frame)
+            val coarse = app.readingcapture.core.detect.CoarseDiff.compare(prev, frame)
+            val coarseA = app.readingcapture.core.detect.CoarseDiff.compare(anchor, frame)
+            diag.log(
+                "frame", "st" to engine.status.name, "mean" to frame.mean().toFloat(),
+                "fine" to fine.strongFraction, "fineA" to fineA.strongFraction, "abs" to fine.meanAbs, "absA" to fineA.meanAbs, "gain" to fineA.gain,
+                "c2" to coarse.over[0], "c4" to coarse.over[1], "c6" to coarse.over[2], "c10" to coarse.over[3], "cmax" to coarse.max,
+                "a2" to coarseA.over[0], "a4" to coarseA.over[1], "a6" to coarseA.over[2], "a10" to coarseA.over[3], "a16" to coarseA.over[4], "amax" to coarseA.max,
+                "sharp" to app.readingcapture.core.detect.Sharpness.gradientEnergy(frame),
+                "gyro" to gyroMax, "accel" to accelMax,
+            )
+            gyroMax = 0f
+            accelMax = 0f
+        }
+        probePrev = frame
+        if (anchor == null || now - probeAnchorAt >= 1000) {
+            probeAnchor = frame
+            probeAnchorAt = now
         }
     }
 

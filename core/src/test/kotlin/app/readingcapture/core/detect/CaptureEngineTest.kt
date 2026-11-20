@@ -170,9 +170,11 @@ class CaptureEngineTest {
         script.hold(SceneState(pages[0]), 2500)
         script.turn(pages[0], pages[1])
         // めくったあと、ピントが合い直すまでぼける
-        script.hold(SceneState(pages[1], blurRadius = 3), 250)
-        script.hold(SceneState(pages[1], blurRadius = 2), 250)
-        script.hold(SceneState(pages[1], blurRadius = 1), 250)
+        script.hold(SceneState(pages[1], blurRadius = 5), 200)
+        script.hold(SceneState(pages[1], blurRadius = 4), 130)
+        script.hold(SceneState(pages[1], blurRadius = 3), 130)
+        script.hold(SceneState(pages[1], blurRadius = 2), 130)
+        script.hold(SceneState(pages[1], blurRadius = 1), 130)
         script.hold(SceneState(pages[1]), 2500)
         val sim = run(script)
         assertEquals(describe(sim), listOf<Int?>(1, 2), sim.captures.pageIds())
@@ -374,7 +376,8 @@ class CaptureEngineTest {
         val requests = ArrayList<Pair<Long, Int?>>()
         for ((i, state) in script.frames.withIndex()) {
             val now = i * 1000L / script.fps
-            val r = engine.onFrame(renderer.render(state, i).downsampleToLongSide(320), now)
+            val jittered = state.copy(shakeX = ((i * 7919) % 100 - 50) / 100f, shakeY = ((i * 104729) % 100 - 50) / 100f)
+            val r = engine.onFrame(renderer.render(jittered, i).downsampleToLongSide(320), now)
             r.request?.let { req ->
                 requests += now to state.truthPageId
                 if (!dropped) dropped = true else engine.onCaptureFinished(req.id, now + 1, saved = true)

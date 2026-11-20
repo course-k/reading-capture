@@ -86,7 +86,16 @@ class Simulation(
     private val vibrationShakePx: Float = 2f,
     /** 撮るのに失敗させる回数（最初の n 回） */
     var failFirstCaptures: Int = 0,
+    /**
+     * 止まっていても続く、映像の細かな揺れ（画素、コマごとに乱数）。
+     * 本物のカメラは、台に固定していても、ピントの微調整・手ぶれ補正・ノイズで 1 画素に満たない幅で揺れ続ける。
+     * 実機（Pixel 6a）で、これを入れていない合成の映像では通るのに自動で撮れない、という不具合が出たので、既定で入れる。
+     */
+    private val jitterPx: Float = 0.5f,
+    /** コマごとの明るさのちらつき（割合） */
+    private val flicker: Float = 0.012f,
 ) {
+    private val jitterRandom = java.util.Random(20261121)
     val captures = mutableListOf<SimCapture>()
     val statuses = mutableListOf<EngineStatus>()
     var nowMs = 0L
@@ -103,10 +112,14 @@ class Simulation(
             nowMs = i * 1000L / script.fps
             actionsByFrame[i]?.forEach { it(this) }
             finishIfDue(raw)
-            var state = raw
+            var state = raw.copy(
+                shakeX = raw.shakeX + (jitterRandom.nextFloat() * 2 - 1) * jitterPx,
+                shakeY = raw.shakeY + (jitterRandom.nextFloat() * 2 - 1) * jitterPx,
+                gain = raw.gain * (1f + (jitterRandom.nextFloat() * 2 - 1) * flicker),
+            )
             if (nowMs < shakeUntil) {
                 val sign = if (i % 2 == 0) 1 else -1
-                state = state.copy(shakeX = sign * vibrationShakePx, shakeY = -sign * vibrationShakePx * 0.5f)
+                state = state.copy(shakeX = state.shakeX + sign * vibrationShakePx, shakeY = state.shakeY - sign * vibrationShakePx * 0.5f)
             }
             val frame = renderer.render(state, i).toWork()
             val result = engine.onFrame(frame, nowMs)
