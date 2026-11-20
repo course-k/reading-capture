@@ -154,7 +154,8 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                     if (flash.value > 0f) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = flash.value)))
                     // 切れている側の端を色で示す
                     if (lastWarnings != null) EdgeMarks(lastWarnings.cut, c.warn)
-                    if (ui.status == EngineStatus.SETTLING || ui.status == EngineStatus.CAPTURING) {
+                    // 輪は、止まり始めてしばらくしてから出す（手ぶれのたびに出たり消えたりさせない）
+                    if ((ui.status == EngineStatus.SETTLING && ui.settleProgress >= 0.6f) || ui.status == EngineStatus.CAPTURING) {
                         SettleRing(ui.settleProgress, Modifier.align(Alignment.Center))
                     }
                     StatusChip(

@@ -45,7 +45,7 @@ class VideoScript(val fps: Int = 30) {
         handInMs: Int = 300,
         handOutMs: Int = 350,
         relaxMs: Int = 250,
-        gyro: Float = 0.3f,
+        gyro: Float = 0.4f,
     ) = apply {
         val w = 480f
         // 手が入る
@@ -105,7 +105,16 @@ class Simulation(
     private val charError: Double = 0.10,
     /** 文字認識が 1 行を読み落とす割合 */
     private val lineDrop: Double = 0.08,
+    /**
+     * 文字を読むのにかかる時間。このあいだ、コマは届かない。
+     * 実機（Pixel 6a）では、ページ全体で 0.6〜1.5 秒かかり、そのあとのコマを「大きく動いた」と数えてしまう不具合が出た
+     */
+    private val readLatencyMs: Long = 300,
+    /** 撮った写真の仕上げ（ページ全体の指紋ができるまで）にかかる時間 */
+    private val processLatencyMs: Long = 1400,
 ) {
+    private var readingUntil = -1L
+    private val enrichments = ArrayList<Triple<Long, Long, SyntheticPage?>>()
     val captures = mutableListOf<SimCapture>()
     val requests = mutableListOf<Pair<Long, Int?>>()
     val statuses = mutableListOf<EngineStatus>()
@@ -122,6 +131,7 @@ class Simulation(
     private var pendingFinishAt = 0L
     private var shakeUntil = -1L
     private var current: SceneState = SceneState(null)
+    private var gyroDuringRead = 0f
 
     fun run(script: VideoScript): List<SimCapture> {
         val actionsByFrame = script.actions.groupBy({ it.first }, { it.second })
@@ -155,11 +165,27 @@ class Simulation(
                 state = state.copy(shakeX = state.shakeX + sign * vibrationShakePx, shakeY = state.shakeY - sign * vibrationShakePx * 0.5f)
                 gyro = maxOf(gyro, 0.8f)
             }
+            // 写真の仕上げが済んだら、ページ全体の指紋を渡す
+            val due = enrichments.filter { it.first <= nowMs }
+            for (e in due) {
+                enrichments.remove(e)
+                e.third?.let { page -> engine.enrichReference(e.second, PageFingerprint.of(noisy(page.textLines, charError * 0.5, lineDrop * 0.5))) }
+            }
+            // 文字を読んでいるあいだは、コマが届かない（そのあいだの動きセンサーの値は、次のコマにまとめて届く）
+            if (nowMs < readingUntil) {
+                gyroDuringRead = maxOf(gyroDuringRead, gyro)
+                continue
+            }
+            if (gyroDuringRead > 0f) {
+                gyro = maxOf(gyro, gyroDuringRead)
+                gyroDuringRead = 0f
+            }
             val frame = renderer.render(state, i).toWork()
             var result = engine.onFrame(frame, nowMs, gyro)
             if (result.needsPageCheck) {
                 pageChecks++
-                result = engine.onPageObserved(observe(raw), nowMs)
+                readingUntil = nowMs + readLatencyMs
+                result = engine.onPageObserved(observe(raw, t), nowMs + readLatencyMs)
             }
             statuses.add(result.status)
             result.request?.let { begin(it, raw) }
@@ -172,29 +198,40 @@ class Simulation(
         engine.requestManual(nowMs)?.let { begin(it, current) }
     }
 
-    /** 文字認識のまね。写っているページの文字を、読み違い・読み落としを混ぜて指紋にする。 */
-    private fun observe(state: SceneState): PageFingerprint {
-        // 暗すぎる、ぼけている、めくっている途中は、ほとんど読めない
-        val page = when {
-            state.gain < 0.2f || state.blurRadius >= 4 -> null
-            state.nextPage != null && state.turnProgress >= 0.98f -> state.nextPage
-            state.nextPage != null && state.turnProgress > 0.02f -> null
-            else -> state.page
-        } ?: return PageFingerprint.of(emptyList())
+    /**
+     * 文字認識のまね。映像のまん中あたり（行の 6 割）だけを読み、読み違い・読み落としを混ぜて指紋にする。
+     * 手のふらつきで、読める範囲は少しずつずれる。
+     */
+    private fun observe(state: SceneState, t: Double): PageFingerprint {
+        val page = visiblePage(state) ?: return PageFingerprint.of(emptyList())
         page.full
+        val all = page.textLines
+        val shift = (0.08 * sin(2 * PI * t / 3.7)).toFloat()
+        val from = ((0.2f + shift) * all.size).toInt().coerceIn(0, all.size)
+        val to = ((0.8f + shift) * all.size).toInt().coerceIn(from, all.size)
         val drop = lineDrop + (if (state.hand != null) 0.2 else 0.0) + state.blurRadius * 0.08
-        val error = charError + state.blurRadius * 0.05
-        val lines = page.textLines.filter { random.nextDouble() >= drop }.map { line ->
+        return PageFingerprint.of(noisy(all.subList(from, to), charError + state.blurRadius * 0.05, drop))
+    }
+
+    /** 暗すぎる、ぼけている、めくっている途中は、ほとんど読めない。 */
+    private fun visiblePage(state: SceneState): SyntheticPage? = when {
+        state.gain < 0.2f || state.blurRadius >= 4 -> null
+        state.nextPage != null && state.turnProgress >= 0.98f -> state.nextPage
+        state.nextPage != null && state.turnProgress > 0.02f -> null
+        else -> state.page
+    }
+
+    private fun noisy(lines: List<String>, error: Double, drop: Double): List<String> =
+        lines.filter { random.nextDouble() >= drop }.map { line ->
             buildString { for (c in line) append(if (random.nextDouble() < error) (0x4E00 + random.nextInt(3000)).toChar() else c) }
         }
-        return PageFingerprint.of(lines)
-    }
 
     private fun begin(request: CaptureRequest, state: SceneState) {
         requests += nowMs to state.truthPageId
         pending = request
         pendingState = state
-        pendingFinishAt = nowMs + captureLatencyMs
+        // 撮り始めるのは、文字を読み終えてから
+        pendingFinishAt = maxOf(nowMs, readingUntil) + captureLatencyMs
     }
 
     private fun finishIfDue(current: SceneState) {
@@ -217,6 +254,7 @@ class Simulation(
         )
         engine.notifyVibration(nowMs, vibrationMs + 150)
         shakeUntil = nowMs + vibrationMs
+        enrichments += Triple(nowMs + processLatencyMs, req.id, visiblePage(state)?.also { it.full })
     }
 
     private fun LumaImage.toWork(): LumaImage = downsampleToLongSide(workLongSide)

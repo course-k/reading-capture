@@ -42,12 +42,16 @@ class PhotoProcessor(
     private val lines = TextLineDetector()
     private val judge = QualityJudge()
     private var lastBoxes: Triple<List<app.readingcapture.core.quality.TextBox>, Int, Int>? = null
+    private var lastFingerprint: app.readingcapture.core.detect.PageFingerprint? = null
 
     /** 点検で知らせることが見つかったときに呼ぶ（仕上げのスレッドから）。 */
     var onWarning: ((photoId: String, warnings: PhotoWarnings) -> Unit)? = null
 
     /** 台帳に載っていない写真を台帳に載せる。載せられたら true を返す。 */
     var adoptOrphan: ((photoId: String) -> Boolean?)? = null
+
+    /** 写真からページ全体の指紋が読めたときに呼ぶ（仕上げのスレッドから）。 */
+    var onPageRead: ((photoId: String, fingerprint: app.readingcapture.core.detect.PageFingerprint) -> Unit)? = null
 
     /** 1 枚の仕上げが済むたびに呼ぶ。 */
     var onProcessed: (() -> Unit)? = null
@@ -119,7 +123,9 @@ class PhotoProcessor(
 
         val measure = measure(inspect)
         lastBoxes = null
+        lastFingerprint = null
         val (cut, lineCount) = detectCut(inspect)
+        lastFingerprint?.let { onPageRead?.invoke(id, it) }
         lastBoxes?.let { (b, w, h) -> logBoxes(id, b, w, h, cut) }
         val warnings = judge.judge(measure, cut, moved)
 
@@ -198,7 +204,9 @@ class PhotoProcessor(
 
     /** 文字の行の枠だけを取り出して、端にかかっているかを見る。 */
     private fun detectCut(bitmap: Bitmap): Pair<EdgeCutResult, Int> = try {
-        val boxes = lines.detect(bitmap)
+        val reading = lines.read(bitmap)
+        lastFingerprint = reading.fingerprint
+        val boxes = reading.boxes
         val result = EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height)
         // 知らせを出すときは、行の枠の並び（数値だけ）を残しておく。外れていたときに調べられるように
         if (result.isCut) lastBoxes = Triple(boxes, bitmap.width, bitmap.height)

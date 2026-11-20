@@ -480,17 +480,47 @@ class CaptureEngineTest {
 
     @Test
     fun `文字の読み違いが多くても、1 ページにつき 1 回ずつ撮る`() {
-        // 端末の文字認識で実測した読み違いの多さでも、二度撮りも撮り逃しも無いこと。
-        // 実測（乱数の文字のページ）: 同じページを 2 回読んだときの重なりが 0.31〜0.43。
-        // 1 文字を正しく読める割合にすると 0.84 前後（重なり = 割合の 6 乗）なので、6 文字に 1 文字の読み違いで試す
+        // 文字の読み違いが多くても、二度撮りも撮り逃しも無いこと。
+        // 実測: 乱数の文字のページ（エミュレーター）では、同じページを 2 回読んだときの重なりが 0.31〜0.43、
+        // 本物の本（Pixel 6a）では 0.88〜0.94。ここでは、その中間より悪い側（8 文字に 1 文字の読み違い）で試す
         val script = VideoScript()
         script.hold(SceneState(pages[0]), 3000)
         for (i in 1 until 6) {
             script.turn(pages[i - 1], pages[i])
             script.hold(SceneState(pages[i]), 4000)
         }
-        val sim = Simulation(CaptureEngine(), charError = 0.17, lineDrop = 0.12)
+        val sim = Simulation(CaptureEngine(), charError = 0.12, lineDrop = 0.12)
         sim.run(script)
         assertEquals(describe(sim), listOf<Int?>(1, 2, 3, 4, 5, 6), sim.captures.pageIds())
+    }
+
+    @Test
+    fun `文字を読むのに時間がかかっても、輪が戻らずに撮る`() {
+        // 実機で、ページ全体を読むのに 0.6〜1.5 秒かかり、そのあとのコマを「大きく動いた」と数えて、
+        // 待ちを最初からやり直し続けていた（「そのまま」と出て輪が一周しない）
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 6000)
+        script.turn(pages[0], pages[1])
+        val turned = script.durationMs
+        script.hold(SceneState(pages[1]), 6000)
+        val sim = Simulation(CaptureEngine(), readLatencyMs = 900)
+        sim.run(script)
+        assertEquals(describe(sim), listOf<Int?>(1, 2), sim.captures.pageIds())
+        assertTrue("最初の 1 枚まで ${sim.captures[0].timeMs}ms", sim.captures[0].timeMs < 3500)
+        assertTrue("めくってから ${sim.captures[1].timeMs - turned}ms", sim.captures[1].timeMs - turned < 3000)
+        assertTrue("文字認識 ${sim.pageChecks} 回", sim.pageChecks <= 12)
+    }
+
+    @Test
+    fun `同じページの上のほうや下のほうを映しても、撮り直さない`() {
+        // 撮る前はまん中だけを読む。写真から読んだページ全体の指紋で補うので、どこを映しても同じページと分かる
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 4000)
+        script.animate(500) { t -> SceneState(pages[0], dy = 150f * t, gyro = 0.6f) }
+        script.hold(SceneState(pages[0], dy = 150f), 3000)
+        script.animate(500) { t -> SceneState(pages[0], dy = 150f - 300f * t, gyro = 0.6f) }
+        script.hold(SceneState(pages[0], dy = -150f), 3000)
+        val sim = run(script)
+        assertEquals(describe(sim), listOf<Int?>(1), sim.captures.pageIds())
     }
 }

@@ -14,8 +14,8 @@ object Texts {
 
     fun status(status: EngineStatus, justCaptured: Boolean): String = when (status) {
         EngineStatus.STARTING -> "準備しています"
-        EngineStatus.MOVING -> "ページに向けて、止めてください"
-        EngineStatus.SETTLING -> "そのまま"
+        // 動いている・止まりかけている、は同じ言葉にする（手に持つと行き来するので、言葉が変わるとちらつく）
+        EngineStatus.MOVING, EngineStatus.SETTLING -> "ページに向けて止めると、撮ります"
         EngineStatus.CAPTURING -> "撮っています"
         EngineStatus.WAITING_NEXT_PAGE -> if (justCaptured) "撮りました。めくってください" else "次のページを待っています"
         EngineStatus.NOT_A_PAGE -> "ページを映してください"

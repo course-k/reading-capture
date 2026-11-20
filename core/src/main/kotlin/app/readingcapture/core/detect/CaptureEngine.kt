@@ -116,9 +116,9 @@ data class EngineConfig(
      * 同じページとみなす、指紋の重なり。
      * 端末の文字認識で実測した値（合成したページ、乱数の文字）: 同じページを位置・大きさ・傾きを変えて見たとき 0.31〜0.43、
      * 違うページ 0.00。乱数の文字は読み違いが多いので、本物の文章なら同じページの重なりはこれより高くなる見込み（未確認）。
-     * 同じ本の違うページは、同じ用語が出てくるぶん 0 より高くなる。実機の記録（check の sim）を見て合わせる。
+     * 実機（Pixel 6a、本物の本、手持ち）で実測した値: 同じページ 0.88〜0.94、違うページ 0.05〜0.12。
      */
-    val sameSimilarity: Float = 0.2f,
+    val sameSimilarity: Float = 0.3f,
     /** 覚えておくページの数。行きつ戻りつ読んでも撮り直さないため */
     val rememberedPages: Int = 6,
     /** 見分けたあと、次に見分け直すまでに最低あける時間（止まっているあいだ、文字認識を回し続けない） */
@@ -167,8 +167,11 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     // 見分けたあとに、めくった・構え直したと思われる大きな動きがあったか
     private var bigMotionSinceDecision = false
 
-    // 最近撮ったページの指紋（古い順）
-    private val references = ArrayDeque<PageFingerprint>()
+    // 最近撮ったページの指紋（古い順）。どの撮影のものかも覚えておく（あとで写真から読んだ指紋で補うため）
+    private class Remembered(val requestId: Long, var fingerprint: PageFingerprint)
+
+    private val references = ArrayDeque<Remembered>()
+    private var lastFrameMs = -1L
 
     // 「新しいページかもしれない」と見た 1 回目の指紋。続けてもう 1 回同じものが見えたら撮る
     private var candidate: PageFingerprint? = null
@@ -188,6 +191,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     // シャッターで撮ったページの指紋を、次に見分けたときに覚える
     private var adoptUntilMs = -1L
+    private var adoptRequestId = 0L
 
     private var retakeArmedAtMs = -1L
 
@@ -225,6 +229,17 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             // 振動のあいだは動きを見ていない。そのあいだにめくり終えていても気づけるよう、止まったら見分け直す
             wasBlank = false
             bigMotionSinceDecision = true
+        }
+
+        // 文字を読んでいるあいだはコマが届かない。あいだの空いたコマどうしを比べると、手のふらつきが積もって
+        // 「大きく動いた」ように見えるので、空いたあとの最初のコマは、比べる元にするだけにする
+        val gap = lastFrameMs >= 0 && timeMs - lastFrameMs > FRAME_GAP_MS
+        lastFrameMs = timeMs
+        if (gap && prevFrame != null) {
+            prevFrame = frame
+            lastMetrics = FrameMetrics(timeMs, 0f, 0f, 1f, sharpness, deviceMotion)
+            if (pending != null) status = EngineStatus.CAPTURING
+            return result(if (pending != null || candidate != null) 1f else 0f)
         }
 
         val prev = prevFrame
@@ -288,7 +303,8 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         val steadyFor = timeMs - unsteadySinceMs
         val progress = (steadyFor.toFloat() / config.settleMs).coerceIn(0f, 1f)
         // 止まっている: はっきり動いたコマがしばらく無く、そのあいだの動きの中央値が小さい
-        val calm = steadyFor >= config.settleMs && recentTimes.size >= 4 &&
+        // 新しいページかもしれないと見たあとの 2 回目は、文字を読んでいたぶんコマが少ないので、少ないコマで判断する
+        val calm = steadyFor >= config.settleMs && recentTimes.size >= (if (candidate != null) 2 else 4) &&
             median(recentFraction) <= config.stillCellFraction &&
             median(recentMax) <= config.stillCellMax &&
             median(recentDevice) <= config.steadyDeviceMotion
@@ -354,7 +370,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         var best = 0f
         var bestIndex = -1
         for ((i, ref) in references.withIndex()) {
-            val sim = PageFingerprint.similarity(ref, fingerprint)
+            val sim = PageFingerprint.similarity(ref.fingerprint, fingerprint)
             if (sim > best) {
                 best = sim
                 bestIndex = i
@@ -373,7 +389,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             val inTime = timeMs <= adoptUntilMs
             adoptUntilMs = -1
             if (inTime && isPage && best < config.sameSimilarity) {
-                remember(fingerprint)
+                remember(fingerprint, adoptRequestId)
                 return decide(EngineStatus.WAITING_NEXT_PAGE)
             }
         }
@@ -392,7 +408,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         if (best >= config.sameSimilarity) {
             // もう撮ったページ。見るたびに指紋を合わせて、次からもっと確かに見分けられるようにする
             candidate = null
-            references[bestIndex] = references[bestIndex].mergedWith(fingerprint)
+            references[bestIndex].fingerprint = references[bestIndex].fingerprint.mergedWith(fingerprint)
             return decide(EngineStatus.WAITING_NEXT_PAGE)
         }
         // 新しいページに見える。文字認識は 1 回だけだと読み違いで別のページに見えることがあるので、
@@ -433,7 +449,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         if (req == null || req.id != requestId) {
             // 待つのをやめたあとで届いた知らせ。撮れていたなら、そのページは覚えておく（もう一度撮らないように）
             if (requestId == timedOutId) {
-                if (saved) timedOutFingerprint?.let { remember(it) }
+                if (saved) timedOutFingerprint?.let { remember(it, requestId) }
                 timedOutId = -1
                 timedOutFingerprint = null
                 if (saved) decided = null
@@ -446,7 +462,10 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         lastCaptureFinishedMs = timeMs
         if (saved) {
             val fp = pendingFingerprint
-            if (fp != null) remember(fp) else adoptUntilMs = timeMs + config.adoptWindowMs
+            if (fp != null) remember(fp, req.id) else {
+                adoptUntilMs = timeMs + config.adoptWindowMs
+                adoptRequestId = req.id
+            }
             decided = EngineStatus.WAITING_NEXT_PAGE
             decidedAtMs = timeMs
             // 撮っているあいだに動いていたら、止まったときにすぐ見分け直す。
@@ -473,8 +492,8 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
      */
     fun onLastDeleted() {
         if (references.size >= 2) {
-            val last = references[references.size - 1]
-            val previous = references[references.size - 2]
+            val last = references[references.size - 1].fingerprint
+            val previous = references[references.size - 2].fingerprint
             if (PageFingerprint.similarity(previous, last) >= config.sameSimilarity) references.removeLast()
         }
     }
@@ -491,13 +510,31 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         wasBlank = true
     }
 
+    /**
+     * 撮った写真そのものから読んだ指紋で、覚えているページを補う。
+     *
+     * 撮る前に見分けるときは、速さのために映像のまん中だけを読む。写真はページ全体が読めるので、
+     * これで補っておくと、同じページのどこを映しても「もう撮った」と分かる。シャッターで撮ったページも、ここで覚える。
+     */
+    fun enrichReference(requestId: Long, fingerprint: PageFingerprint) {
+        if (fingerprint.hashes.size < MIN_HASHES) return
+        val existing = references.firstOrNull { it.requestId == requestId }
+        if (existing != null) {
+            existing.fingerprint = existing.fingerprint.mergedWith(fingerprint)
+            return
+        }
+        // まだ覚えていなかった（シャッターで撮った、など）
+        if (adoptUntilMs >= 0 && adoptRequestId == requestId) adoptUntilMs = -1
+        remember(fingerprint, requestId)
+    }
+
     /** 覚えているページの指紋（古い順）。アプリを開き直しても二度撮りしないよう、保存しておくのに使う。 */
-    fun rememberedPages(): List<IntArray> = references.map { it.hashes }
+    fun rememberedPages(): List<IntArray> = references.map { it.fingerprint.hashes }
 
     /** 保存しておいた指紋を戻す。 */
     fun restorePages(pages: List<IntArray>) {
         references.clear()
-        for (h in pages.takeLast(config.rememberedPages)) references.addLast(PageFingerprint(h, config.minLines, config.minChars))
+        for (h in pages.takeLast(config.rememberedPages)) references.addLast(Remembered(0, PageFingerprint(h, config.minLines, config.minChars)))
     }
 
     /** 本を切り替えた。覚えているページを忘れる。 */
@@ -511,6 +548,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     /** カメラを開き直した。覚えているページは残し、露出とピントの落ち着きだけ待ち直す。 */
     fun onCameraRestarted() {
         startedAtMs = -1
+        lastFrameMs = -1
         prevFrame = null
         clearRecent()
         candidate = null
@@ -535,7 +573,10 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
         /** 新しいページかもしれないと見てから、もう 1 回見るまでにあける時間と、待つ上限 */
         const val CANDIDATE_GAP_MS = 100L
-        const val CANDIDATE_MAX_AGE_MS = 1500L
+        const val CANDIDATE_MAX_AGE_MS = 2500L
+
+        /** コマとコマのあいだがこれより空いたら、比べずに仕切り直す */
+        const val FRAME_GAP_MS = 200L
     }
 
     private fun clearRecent() {
@@ -570,8 +611,8 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     private fun result(progress: Float, needsPageCheck: Boolean = false) =
         FrameResult(status, null, progress, lastMetrics, needsPageCheck)
 
-    private fun remember(fingerprint: PageFingerprint) {
-        references.addLast(fingerprint)
+    private fun remember(fingerprint: PageFingerprint, requestId: Long) {
+        references.addLast(Remembered(requestId, fingerprint))
         while (references.size > config.rememberedPages) references.removeFirst()
     }
 

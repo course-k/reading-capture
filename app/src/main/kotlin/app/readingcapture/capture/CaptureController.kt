@@ -81,6 +81,8 @@ class CaptureController(
     private val engine = CaptureEngine()
     private val analysisExecutor = Executors.newSingleThreadScheduledExecutor { Thread(it, "capture-analysis") }
     private var warningDeferred = false
+    // 写真の id と、撮る合図の番号の対応（写真から読んだ指紋を、どのページのものか結び付ける）
+    private val requestIds = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val ioExecutor = Executors.newSingleThreadExecutor { Thread(it, "capture-io") }
     private val mainExecutor = ContextCompat.getMainExecutor(context)
 
@@ -140,6 +142,15 @@ class CaptureController(
         }
         // アプリを開き直しても同じページを二度撮りしないよう、最後に撮ったページを思い出す（30 分以内のものだけ）
         analysisExecutor.execute { restoreReference() }
+        // 写真からページ全体の指紋が読めたら、覚えているページを補う
+        processor.onPageRead = { photoId, fingerprint ->
+            analysisExecutor.execute {
+                requestIds.remove(photoId)?.let {
+                    engine.enrichReference(it, fingerprint)
+                    saveReference()
+                }
+            }
+        }
         processor.onWarning = { _, _ ->
             analysisExecutor.execute {
                 // 次の 1 枚を撮っている最中に揺らすと、その 1 枚がぶれる。撮り終わるまで待つ
@@ -267,7 +278,6 @@ class CaptureController(
 
     // ---- 内部（判定用のスレッド） ----
 
-    @androidx.annotation.OptIn(markerClass = [androidx.camera.core.ExperimentalGetImage::class])
     private fun analyze(proxy: ImageProxy) {
         try {
             val plane = proxy.planes[0]
@@ -287,13 +297,13 @@ class CaptureController(
             probe(frame, now)
             var result = engine.onFrame(frame, now, motion)
             if (result.needsPageCheck) {
-                // 止まった。このコマの文字を読んで、どのページかを見分ける
-                val image = proxy.image
-                val fingerprint = if (image == null) PageFingerprint.of(emptyList()) else
-                    runCatching { pageReader.fingerprint(image, proxy.imageInfo.rotationDegrees) }
-                        .onFailure { diag.log("read_error", "error" to it.toString()) }
-                        .getOrDefault(PageFingerprint.of(emptyList()))
+                // 止まった。このコマのまん中の文字を読んで、どのページかを見分ける
+                val fingerprint = runCatching { pageReader.fingerprintOfCenter(scratch, w, h, rowStride, proxy.imageInfo.rotationDegrees) }
+                    .onFailure { diag.log("read_error", "error" to it.toString()) }
+                    .getOrDefault(PageFingerprint.of(emptyList()))
                 val after = SystemClock.elapsedRealtime()
+                // 読んでいるあいだの動きは、次のコマとの比較に持ち込まない（読み終えてからの動きだけを見る）
+                if (gyroSinceFrame >= 0f) gyroSinceFrame = 0f
                 result = engine.onPageObserved(fingerprint, after)
                 val m = result.metrics
                 diag.log(
@@ -410,6 +420,7 @@ class CaptureController(
         val id = newPhotoId(capturedAt)
         val bookId = settings.currentBookId.value ?: BookRepository.UNSORTED_ID
         val raw = store.rawFile(id)
+        requestIds[id] = request.id
         val started = SystemClock.elapsedRealtime()
         capture.takePicture(
             ImageCapture.OutputFileOptions.Builder(raw).build(),
@@ -445,6 +456,7 @@ class CaptureController(
 
                 override fun onError(exception: ImageCaptureException) {
                     raw.delete()
+                    requestIds.remove(id)
                     diag.log("capture_error", "reason" to request.reason.name, "code" to exception.imageCaptureError, "error" to exception.message)
                     analysisExecutor.execute {
                         engine.onCaptureFinished(request.id, SystemClock.elapsedRealtime(), saved = false)
