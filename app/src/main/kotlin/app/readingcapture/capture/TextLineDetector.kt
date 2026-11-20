@@ -19,6 +19,28 @@ class TextLineDetector {
 
     private val recognizer by lazy { TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build()) }
 
+    /**
+     * カメラの映像のコマから、ページを見分けるための指紋を作る。
+     *
+     * 読めた文字は、その場で数値（ハッシュ）の集まりに変えて捨てる。文字のままでは、覚えも、保存も、送りもしない。
+     * 画面のスレッドからは呼ばないこと（結果を待つため）。
+     * @param rotationDegrees コマを正しい向きにするのに要る回転
+     */
+    fun fingerprint(image: android.media.Image, rotationDegrees: Int): app.readingcapture.core.detect.PageFingerprint {
+        val text = Tasks.await(recognizer.process(InputImage.fromMediaImage(image, rotationDegrees)), 5, TimeUnit.SECONDS)
+        val lines = ArrayList<String>()
+        for (block in text.textBlocks) for (line in block.lines) lines += line.text
+        return app.readingcapture.core.detect.PageFingerprint.of(lines)
+    }
+
+    /** 画像から指紋を作る（確かめ用）。 */
+    fun fingerprint(bitmap: Bitmap, gram: Int = 3): app.readingcapture.core.detect.PageFingerprint {
+        val text = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)), 10, TimeUnit.SECONDS)
+        val lines = ArrayList<String>()
+        for (block in text.textBlocks) for (line in block.lines) lines += line.text
+        return app.readingcapture.core.detect.PageFingerprint.of(lines, gram)
+    }
+
     /** 画面のスレッドからは呼ばないこと（結果を待つため）。 */
     fun detect(bitmap: Bitmap): List<TextBox> {
         val text = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)), 10, TimeUnit.SECONDS)

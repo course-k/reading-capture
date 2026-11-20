@@ -41,6 +41,7 @@ class PhotoProcessor(
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "photo-processor") }
     private val lines = TextLineDetector()
     private val judge = QualityJudge()
+    private var lastBoxes: Triple<List<app.readingcapture.core.quality.TextBox>, Int, Int>? = null
 
     /** 点検で知らせることが見つかったときに呼ぶ（仕上げのスレッドから）。 */
     var onWarning: ((photoId: String, warnings: PhotoWarnings) -> Unit)? = null
@@ -117,7 +118,9 @@ class PhotoProcessor(
         else upright
 
         val measure = measure(inspect)
+        lastBoxes = null
         val (cut, lineCount) = detectCut(inspect)
+        lastBoxes?.let { (b, w, h) -> logBoxes(id, b, w, h, cut) }
         val warnings = judge.judge(measure, cut, moved)
 
         // 仕上げたものを保存する。書き終えてから名前を付け替えるので、途中で落ちても半端なファイルは残らない
@@ -165,10 +168,41 @@ class PhotoProcessor(
         return PhotoMeasurer.measure(LumaImage(w, h, luma).downsampleToLongSide(PhotoMeasurer.MEASURE_LONG_SIDE))
     }
 
+    /**
+     * 合わせ込み用: 端末に残っている仕上げ済みの写真について、文字の行の枠の並び（位置と大きさの数値だけ）を記録する。
+     * 切れの判定が外れたときに、どういう並びで外れたかを調べるのに使う。文字そのものは記録しない。
+     */
+    fun reinspect(limit: Int = 6) {
+        executor.execute {
+            for (p in db.photosInState(PhotoState.READY).takeLast(limit)) {
+                val file = p.fileName?.let { store.photoFile(it) } ?: continue
+                if (!file.exists()) continue
+                runCatching {
+                    val source = BitmapFactory.decodeFile(file.path) ?: return@runCatching
+                    val scale = INSPECT_LONG_SIDE.toFloat() / max(source.width, source.height)
+                    val bitmap = if (scale < 1f) Bitmap.createScaledBitmap(source, (source.width * scale).roundToInt(), (source.height * scale).roundToInt(), true) else source
+                    val boxes = lines.detect(bitmap)
+                    logBoxes(p.id, boxes, bitmap.width, bitmap.height, EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height))
+                    if (bitmap !== source) bitmap.recycle()
+                    source.recycle()
+                }.onFailure { diag.log("reinspect_error", "id" to p.id, "error" to it.toString()) }
+            }
+            diag.log("reinspect_done")
+        }
+    }
+
+    private fun logBoxes(id: String, boxes: List<app.readingcapture.core.quality.TextBox>, w: Int, h: Int, cut: EdgeCutResult) {
+        val packed = boxes.joinToString(";") { "${it.left.roundToInt()},${it.top.roundToInt()},${it.right.roundToInt()},${it.bottom.roundToInt()}" }
+        diag.log("boxes", "id" to id, "w" to w, "h" to h, "n" to boxes.size, "cut" to cut.sides.joinToString(",") { it.name }, "b" to packed)
+    }
+
     /** 文字の行の枠だけを取り出して、端にかかっているかを見る。 */
     private fun detectCut(bitmap: Bitmap): Pair<EdgeCutResult, Int> = try {
         val boxes = lines.detect(bitmap)
-        EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height) to boxes.size
+        val result = EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height)
+        // 知らせを出すときは、行の枠の並び（数値だけ）を残しておく。外れていたときに調べられるように
+        if (result.isCut) lastBoxes = Triple(boxes, bitmap.width, bitmap.height)
+        result to boxes.size
     } catch (e: Exception) {
         diag.log("ocr_error", "error" to e.toString())
         EdgeCutResult(emptySet()) to -1

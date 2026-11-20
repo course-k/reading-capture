@@ -7,7 +7,7 @@ enum class EngineStatus {
     /** 始めたばかりで、露出やピントが落ち着くのを待っている */
     STARTING,
 
-    /** 動いている（めくっている、手が入っている） */
+    /** 動いている（スマホが動いている、めくっている、手が入っている） */
     MOVING,
 
     /** 止まった。撮る前に少しだけ待っている */
@@ -35,24 +35,33 @@ data class FrameResult(
     /** 止まってから撮るまでの進み具合（0..1）。画面の輪に使う */
     val settleProgress: Float,
     val metrics: FrameMetrics,
+    /**
+     * いまのコマに何が写っているかを見てほしい（文字認識で指紋を作ってほしい）。
+     * true のときは、同じコマで [CaptureEngine.onPageObserved] を続けて呼ぶ。
+     */
+    val needsPageCheck: Boolean = false,
 )
 
 /** 合わせ込み用の数値。画像の中身は含まない。 */
 data class FrameMetrics(
     val timeMs: Long,
-    /** 基準のコマからの、はっきり変わった画素の割合 */
-    val strongFraction: Float,
-    val meanAbs: Float,
+    /** 直前のコマから変わった区画の割合 */
+    val cellFraction: Float,
+    /** 区画の平均の変化の最大 */
+    val cellMax: Float,
     val gain: Float,
     val sharpness: Float,
-    /** 直近の同じページ判定（判定したコマだけ） */
-    val match: MatchResult? = null,
-    val texturedFraction: Float? = null,
+    /** スマホ自体の動き（回る速さ）。分からなければ null */
+    val deviceMotion: Float? = null,
+    /** 覚えているページとの重なりの最大（見分けたコマだけ） */
+    val similarity: Float? = null,
+    val lineCount: Int? = null,
+    val charCount: Int? = null,
 )
 
 /** 撮り終えたときにエンジンが返す。 */
 data class CaptureOutcome(
-    /** 撮っているあいだに映像が動いた（ぶれているかもしれない） */
+    /** 撮っているあいだに動いた（ぶれているかもしれない） */
     val movedDuringCapture: Boolean,
 )
 
@@ -60,30 +69,35 @@ data class EngineConfig(
     /** 判定に使う画像の長いほうの辺（画素） */
     val workLongSide: Int = 320,
     /**
-     * 「止まっている」とみなす、直前のコマからの変化の上限。区画（8×8 画素）の平均が 4 段階を超えて変わった区画の割合。
-     * 本物のカメラの映像は、止まっていても 1 画素に満たない幅で揺れ続ける（ピントの微調整、手ぶれ補正、ノイズ）。
-     * 画素ごとに比べるとその揺れを「動いた」と数えてしまうので、区画の平均で比べる。
+     * 「スマホが止まっている」とみなす、回る速さの上限（ラジアン毎秒）。
+     * 実機（Pixel 6a）を手に持って止めたときが 0.03〜0.08、動かしているときが 0.15 以上だった。
      */
-    val stillCellFraction: Float = 0.035f,
-    /** 「止まっている」とみなす、区画の平均の変化の最大（1 か所でも大きく変われば、手や指が動いている） */
-    val stillCellMax: Float = 14f,
-    /** 「ほぼ止まっている」（手でページを押さえている、など）とみなす、変わった区画の割合の上限 */
-    val looseCellFraction: Float = 0.10f,
+    val steadyDeviceMotion: Float = 0.12f,
+    /** これを超えて動いたら、ページをめくった・構え直したかもしれないので、止まったら見分け直す */
+    val bigDeviceMotion: Float = 0.5f,
     /**
-     * 止まり始めたコマから、これ以上の割合の区画が（4 段階を超えて）変わったら、まだ止まっていない。
-     * コマごとの変化は小さくても、ゆっくり動き続けている（ページの反りが戻っている途中、など）のを見分ける。
+     * 「写っているものが止まっている」とみなす、直前のコマからの変化の上限。区画（8×8 画素）の平均が 4 段階を超えて変わった区画の割合。
+     * 本物のカメラの映像は、止まっていても細かく揺れ続けるので、画素ごとではなく区画の平均で比べる。
      */
-    val driftCellFraction: Float = 0.04f,
-    /** 判定を済ませたコマから、これ以上の割合の区画が（6 段階を超えて）変わったら、判定し直す */
-    val changedCellFraction: Float = 0.05f,
-    /** 止まってから撮るまでの時間 */
-    val strictSettleMs: Long = 500,
-    /** ほぼ止まっている状態が続いたら撮る、までの時間 */
-    val looseSettleMs: Long = 1500,
+    val stillCellFraction: Float = 0.045f,
+    /** 「止まっている」とみなす、区画の平均の変化の最大（1 か所でも大きく変われば、手や指が動いている） */
+    val stillCellMax: Float = 16f,
+    /**
+     * 「はっきり動いている」とみなす値。これを 1 コマでも超えたら、止まるのを待ち直す。
+     * 手に持っていると、止めているつもりでも、ときどき [stillCellFraction] を超えるコマが混じる。
+     * そこで「止まっている」は、直近 [settleMs] のあいだの中央値で見て、はっきり動いたコマが無いこと、で判断する。
+     */
+    val movingCellFraction: Float = 0.15f,
+    val movingCellMax: Float = 45f,
+    val movingDeviceMotion: Float = 0.3f,
+    /** これを超える割合の区画が変わったら、ページをめくった・手が入ったとみなして、止まったら見分け直す */
+    val bigCellFraction: Float = 0.25f,
+    /** 止まってから撮るまでの時間。手持ちでは長く止めていられないので短くする */
+    val settleMs: Long = 350,
     /** 撮り終えてから次を撮るまでに最低あける時間 */
-    val refractoryMs: Long = 500,
+    val refractoryMs: Long = 400,
     /** 始めてから判定を始めるまでの時間 */
-    val startupGraceMs: Long = 800,
+    val startupGraceMs: Long = 700,
     /**
      * ピントが合ったとみなす条件 1: いまの鮮明さが、止まってからの最大のこの割合以上。
      * 本物の映像の鮮明さは、止まっていても 1〜2 割は揺れるので、揺れの幅では見ない。
@@ -93,55 +107,75 @@ data class EngineConfig(
     val focusRising: Float = 1.12f,
     /** 鮮明さを見る時間 */
     val focusWindowMs: Long = 1000,
-    /** ピントが落ち着かなくても、ここまで待ったら撮る */
-    val focusTimeoutMs: Long = 1500,
-    /** ページらしいとみなす、模様のある区画の割合の下限 */
-    val minTexturedFraction: Float = 0.08f,
-    /** 暗すぎて判定しない明るさ */
-    val minMeanLuma: Float = 24f,
-    /** 「撮り直す」のあと、動きが無くてもここまで待ったら撮る */
-    val retakeTimeoutMs: Long = 2500,
-    /** 「ページらしくない」と判断したあと、動きが無くてもこの間隔で見直す（露出がゆっくり明るくなった、など） */
-    val notAPageRecheckMs: Long = 1500,
+    /** ピントが落ち着かなくても、ここまで待ったら進める */
+    val focusTimeoutMs: Long = 800,
+    /** ページとみなすのに要る、読めた行と文字の数 */
+    val minLines: Int = 4,
+    val minChars: Int = 40,
+    /**
+     * 同じページとみなす、指紋の重なり。
+     * 端末の文字認識で実測した値（合成したページ、乱数の文字）: 同じページを位置・大きさ・傾きを変えて見たとき 0.31〜0.43、
+     * 違うページ 0.00。乱数の文字は読み違いが多いので、本物の文章なら同じページの重なりはこれより高くなる見込み（未確認）。
+     * 同じ本の違うページは、同じ用語が出てくるぶん 0 より高くなる。実機の記録（check の sim）を見て合わせる。
+     */
+    val sameSimilarity: Float = 0.2f,
+    /** 覚えておくページの数。行きつ戻りつ読んでも撮り直さないため */
+    val rememberedPages: Int = 6,
+    /** 見分けたあと、次に見分け直すまでに最低あける時間（止まっているあいだ、文字認識を回し続けない） */
+    val recheckMinMs: Long = 700,
+    /** 大きな動きが無くても、止まっているあいだはこの間隔で見分け直す（めくったのを見逃したときの保険） */
+    val recheckMaxMs: Long = 2500,
+    /** 「ページらしくない」と判断したあとの、見分け直しの間隔 */
+    val notAPageRecheckMs: Long = 1000,
+    /** 「撮り直す」を押してから、構え直す時間として最低あける時間 */
+    val retakeDelayMs: Long = 700,
     /** 撮る合図を出してから、ここまで待っても撮り終わりの知らせが来なければ、失敗として扱う */
     val captureTimeoutMs: Long = 8000,
-    val matcher: MatcherConfig = MatcherConfig(),
+    /** シャッターで撮ったあと、そのページの指紋を取れるまで待つ時間 */
+    val adoptWindowMs: Long = 3000,
 )
 
 /**
- * カメラの映像のコマを順に受け取り、「いま撮る」を決める。
+ * カメラの映像のコマを順に受け取り、「いま撮る」を決める。スマホを手に持って使う前提。
  *
- * 考え方: スマホは台に固定されているので、映像が変わるのはページをめくるときと手が入るとき。
- * 映像が止まったら、最後に撮った 1 枚と比べ、違うページなら撮る。同じページなら次に動くまで何もしない。
+ * 1. スマホが止まり、写っているものも止まるのを待つ（動きセンサーと、コマどうしの差）
+ * 2. 止まったら、そのコマに何が写っているかを見てもらう（文字認識。呼び出し側が行う）
+ * 3. ページが写っていて、最近撮ったどのページとも違えば、撮る
  *
- * カメラにも時計にも依存しない。時刻はコマに付いてくる値だけを使うので、
+ * 文字認識を回すのは、止まったときだけ。同じページを映し続けているあいだは、間隔をあける。
+ *
+ * カメラにも時計にも文字認識にも依存しない。時刻・動き・指紋は外から受け取るので、
  * 合成した映像を流して同じ結果を何度でも再現できる。スレッドは 1 本から呼ぶこと。
  */
 class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
-    private val matcher = PageMatcher(config.matcher)
-
     private var startedAtMs = -1L
 
-    // 直前のコマ。これと比べて「いま動いているか」を見る
+    // 直前のコマ。これと比べて「写っているものが動いているか」を見る
     private var prevFrame: LumaImage? = null
-    // 最後に「動いている」と見たとき
-    private var strictSinceMs = 0L
-    private var looseSinceMs = 0L
-    // 止まり始めたときのコマ。ここからゆっくりずれ続けていないかを見る
-    private var windowAnchor: LumaImage? = null
-    // 判定を済ませたときのコマ。ここから大きく変わったら判定し直す
-    private var evalAnchor: LumaImage? = null
+    // 最後に「はっきり動いている」と見たとき
+    private var unsteadySinceMs = 0L
+    // 直近のコマの動き（時刻、変わった区画の割合、区画の変化の最大、スマホの動き）
+    private val recentTimes = ArrayDeque<Long>()
+    private val recentFraction = ArrayDeque<Float>()
+    private val recentMax = ArrayDeque<Float>()
+    private val recentDevice = ArrayDeque<Float>()
 
-    // 止まったあと、この基準のコマについてはもう判定を済ませた（次に動くまで何もしない）
-    private var settledStatus: EngineStatus? = null
-    private var settledAtMs = 0L
+    // 見分けた結果。次に見分け直すまで、この状態を出し続ける
+    private var decided: EngineStatus? = null
+    private var decidedAtMs = 0L
+    // 見分けたあとに、めくった・構え直したと思われる大きな動きがあったか
+    private var bigMotionSinceDecision = false
 
-    // 最後に撮ったページ（と、その 1 つ前）
-    private val references = ArrayDeque<PageSignature>()
+    // 最近撮ったページの指紋（古い順）
+    private val references = ArrayDeque<PageFingerprint>()
+
+    // 「新しいページかもしれない」と見た 1 回目の指紋。続けてもう 1 回同じものが見えたら撮る
+    private var candidate: PageFingerprint? = null
+    private var candidateAtMs = 0L
 
     private var pending: CaptureRequest? = null
-    private var pendingSignature: PageSignature? = null
+    private var pendingFingerprint: PageFingerprint? = null
     private var movedDuringCapture = false
     private var nextRequestId = 1L
     private var lastCaptureFinishedMs = Long.MIN_VALUE / 2
@@ -150,193 +184,241 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     // 撮り終わりの知らせが来ないまま待つのをやめた合図。遅れて知らせが届いたら、そのページを覚える
     private var timedOutId = -1L
-    private var timedOutSignature: PageSignature? = null
+    private var timedOutFingerprint: PageFingerprint? = null
+
+    // シャッターで撮ったページの指紋を、次に見分けたときに覚える
+    private var adoptUntilMs = -1L
 
     private var retakeArmedAtMs = -1L
-    private var retakeSawMotion = false
 
     private val sharpnessTimes = ArrayDeque<Long>()
     private val sharpnessValues = ArrayDeque<Float>()
 
-    private var lastFrame: LumaImage? = null
-    private var lastFrameTimeMs = 0L
+    private var lastMetrics = FrameMetrics(0, 0f, 0f, 1f, 0f)
 
     var status: EngineStatus = EngineStatus.STARTING
         private set
 
-    /** 撮ったページを覚えているか。 */
-    val hasReference: Boolean get() = references.isNotEmpty()
-
     /** 撮る合図を出して、撮り終わりを待っているところか。 */
     val isCapturing: Boolean get() = pending != null
 
-    /** 判定用の大きさに縮めたコマを渡す。 */
-    fun onFrame(frame: LumaImage, timeMs: Long): FrameResult {
+    /**
+     * 判定用の大きさに縮めたコマを渡す。
+     * @param deviceMotion 前のコマからいままでの、スマホの回る速さの最大（ラジアン毎秒）。センサーが無ければ null
+     */
+    fun onFrame(frame: LumaImage, timeMs: Long, deviceMotion: Float? = null): FrameResult {
         if (startedAtMs < 0) startedAtMs = timeMs
-        lastFrame = frame
-        lastFrameTimeMs = timeMs
 
         val sharpness = Sharpness.gradientEnergy(frame)
         pushSharpness(timeMs, sharpness)
 
         // 自分の振動でスマホが揺れているあいだは、動きを見ない
         if (timeMs < blankUntilMs) {
-            resetMotion(frame, timeMs)
+            prevFrame = frame
+            unsteadySinceMs = timeMs
+            clearRecent()
             wasBlank = true
-            return result(timeMs, DiffStats(0f, 0f, 1f), sharpness, 0f)
+            lastMetrics = FrameMetrics(timeMs, 0f, 0f, 1f, sharpness, deviceMotion)
+            return result(0f)
         }
         if (wasBlank) {
-            // 振動のあいだは動きを見ていない。そのあいだにめくり終えていても気づけるよう、止まったら 1 回だけ見直す
+            // 振動のあいだは動きを見ていない。そのあいだにめくり終えていても気づけるよう、止まったら見分け直す
             wasBlank = false
-            if (pending == null) settledStatus = null
+            bigMotionSinceDecision = true
         }
 
         val prev = prevFrame
+        prevFrame = frame
         if (prev == null) {
-            resetMotion(frame, timeMs)
+            unsteadySinceMs = timeMs
             status = if (timeMs - startedAtMs < config.startupGraceMs) EngineStatus.STARTING else EngineStatus.MOVING
-            return result(timeMs, DiffStats(0f, 0f, 1f), sharpness, 0f)
+            lastMetrics = FrameMetrics(timeMs, 0f, 0f, 1f, sharpness, deviceMotion)
+            return result(0f)
         }
 
         // 直前のコマからどれだけ変わったか（区画の平均で比べる）
         val velocity = CoarseDiff.compare(prev, frame)
-        prevFrame = frame
         val cellFraction = velocity.over[CELL_4]
-        var strictBroken = cellFraction > config.stillCellFraction || velocity.max > config.stillCellMax
-        val looseBroken = cellFraction > config.looseCellFraction
-        if (!strictBroken) {
-            // コマごとには止まって見えても、止まり始めからゆっくりずれ続けていないか
-            val anchor = windowAnchor
-            if (anchor != null && CoarseDiff.compare(anchor, frame).over[CELL_4] > config.driftCellFraction) strictBroken = true
+        lastMetrics = FrameMetrics(timeMs, cellFraction, velocity.max, velocity.gain, sharpness, deviceMotion)
+
+        // はっきり動いたコマ
+        val unsteady = cellFraction > config.movingCellFraction || velocity.max > config.movingCellMax ||
+            (deviceMotion != null && deviceMotion > config.movingDeviceMotion)
+        if (unsteady) {
+            unsteadySinceMs = timeMs
+            candidate = null
         }
-        if (strictBroken) {
-            strictSinceMs = timeMs
-            windowAnchor = frame
+        recentTimes.addLast(timeMs)
+        recentFraction.addLast(cellFraction)
+        recentMax.addLast(velocity.max)
+        recentDevice.addLast(deviceMotion ?: 0f)
+        while (recentTimes.isNotEmpty() && timeMs - recentTimes.first() > config.settleMs) {
+            recentTimes.removeFirst()
+            recentFraction.removeFirst()
+            recentMax.removeFirst()
+            recentDevice.removeFirst()
         }
-        if (looseBroken) {
-            looseSinceMs = timeMs
-            // 「撮り直す」を押した指の揺れは数えない
-            if (retakeArmedAtMs >= 0 && timeMs - retakeArmedAtMs >= RETAKE_TAP_IGNORE_MS) retakeSawMotion = true
+        if ((deviceMotion != null && deviceMotion > config.bigDeviceMotion) || cellFraction > config.bigCellFraction) {
+            bigMotionSinceDecision = true
         }
-        // 判定を済ませたコマから大きく変わったら（ページをめくった、手が入った）、済ませた判定は捨てる
-        if (settledStatus != null) {
-            val anchor = evalAnchor
-            if (anchor == null || CoarseDiff.compare(anchor, frame).over[CELL_6] > config.changedCellFraction) settledStatus = null
-        }
-        val strictDiff = DiffStats(cellFraction, velocity.max, velocity.gain)
 
         pending?.let { p ->
             if (timeMs - p.timeMs > config.captureTimeoutMs) {
                 // 撮り終わりの知らせが来ない。撮れなかったものとして、判定に戻る
                 timedOutId = p.id
-                timedOutSignature = pendingSignature
-                if (p.reason == CaptureReason.RETAKE) rearmRetake(timeMs)
+                timedOutFingerprint = pendingFingerprint
+                if (p.reason == CaptureReason.RETAKE) retakeArmedAtMs = timeMs - config.retakeDelayMs
                 pending = null
-                pendingSignature = null
+                pendingFingerprint = null
                 movedDuringCapture = false
-                settledStatus = null
+                decided = null
             } else {
                 // 撮っている最中に動いたら、ぶれているかもしれない
-                if (strictBroken) movedDuringCapture = true
+                if (unsteady) movedDuringCapture = true
                 status = EngineStatus.CAPTURING
-                return result(timeMs, strictDiff, sharpness, 1f)
+                return result(1f)
             }
         }
 
         if (timeMs - startedAtMs < config.startupGraceMs) {
             status = EngineStatus.STARTING
-            return result(timeMs, strictDiff, sharpness, 0f)
+            return result(0f)
         }
 
-        // 大きく動くまでは、済ませた判定のまま（小さな揺れでは判定し直さない）
-        settledStatus?.let { settled ->
-            val recheck = settled == EngineStatus.NOT_A_PAGE && timeMs - settledAtMs >= config.notAPageRecheckMs
-            if (!recheck) {
-                status = settled
-                return result(timeMs, strictDiff, sharpness, 0f)
+        val steadyFor = timeMs - unsteadySinceMs
+        val progress = (steadyFor.toFloat() / config.settleMs).coerceIn(0f, 1f)
+        // 止まっている: はっきり動いたコマがしばらく無く、そのあいだの動きの中央値が小さい
+        val calm = steadyFor >= config.settleMs && recentTimes.size >= 4 &&
+            median(recentFraction) <= config.stillCellFraction &&
+            median(recentMax) <= config.stillCellMax &&
+            median(recentDevice) <= config.steadyDeviceMotion
+        if (!calm) {
+            // 動いている。見分けた結果は、大きく動くまではそのまま出す（小さな手ぶれで表示をちらつかせない）
+            val keep = decided
+            status = when {
+                keep != null && !bigMotionSinceDecision -> keep
+                steadyFor >= 120 -> EngineStatus.SETTLING
+                else -> EngineStatus.MOVING
             }
-            settledStatus = null
+            return result(if (keep != null && !bigMotionSinceDecision) 0f else minOf(progress, 0.9f))
         }
 
-        val strictAge = timeMs - strictSinceMs
-        val looseAge = timeMs - looseSinceMs
-        val strictProgress = strictAge.toFloat() / config.strictSettleMs
-        val looseProgress = looseAge.toFloat() / config.looseSettleMs
-        val progress = maxOf(strictProgress, looseProgress).coerceIn(0f, 1f)
+        // ここから先は、止まっている
+        // 新しいページかもしれないと見た直後は、少しあけてもう 1 回見てもらう
+        if (candidate != null && decided == null) {
+            if (timeMs - candidateAtMs > CANDIDATE_MAX_AGE_MS) candidate = null
+            else if (timeMs - candidateAtMs < CANDIDATE_GAP_MS) {
+                status = EngineStatus.SETTLING
+                return result(1f)
+            } else {
+                status = EngineStatus.SETTLING
+                return result(1f, needsPageCheck = true)
+            }
+        }
 
-        val settled = strictAge >= config.strictSettleMs || looseAge >= config.looseSettleMs
-        if (!settled) {
-            // 動いた直後か、止まり始めたところ
-            status = if (strictAge >= 100 || looseAge >= 250) EngineStatus.SETTLING else EngineStatus.MOVING
-            return result(timeMs, strictDiff, sharpness, progress)
+        decided?.let { d ->
+            val age = timeMs - decidedAtMs
+            val interval = if (d == EngineStatus.NOT_A_PAGE) config.notAPageRecheckMs else config.recheckMaxMs
+            val recheck = retakeDue(timeMs) || age >= interval || (bigMotionSinceDecision && age >= config.recheckMinMs)
+            if (!recheck) {
+                status = d
+                return result(0f)
+            }
         }
 
         if (timeMs - lastCaptureFinishedMs < config.refractoryMs) {
             status = EngineStatus.SETTLING
-            return result(timeMs, strictDiff, sharpness, progress)
+            return result(progress)
         }
-
-        // ピントが動いている最中は待つ（ただし待ちすぎない）
-        val settledFor = maxOf(strictAge - config.strictSettleMs, looseAge - config.looseSettleMs)
-        if (!focusStable(timeMs) && settledFor < config.focusTimeoutMs) {
+        if (retakeArmedAtMs >= 0 && !retakeDue(timeMs)) {
+            // 「撮り直す」を押したばかり。構え直すのを待つ
             status = EngineStatus.SETTLING
-            return result(timeMs, strictDiff, sharpness, 1f)
+            return result(progress)
         }
 
-        // ここで判定する
-        val signature = matcher.prepare(frame)
-        val textured = matcher.texturedFraction(signature)
+        // ピントを合わせている最中は待つ（ただし待ちすぎない）
+        if (!focusStable(timeMs) && steadyFor - config.settleMs < config.focusTimeoutMs) {
+            status = EngineStatus.SETTLING
+            return result(1f)
+        }
+
+        status = decided ?: EngineStatus.SETTLING
+        return result(1f, needsPageCheck = true)
+    }
+
+    /**
+     * [onFrame] が「見てほしい」と返したコマに、何が写っていたかを伝える。
+     * @param fingerprint そのコマから読めた文字の指紋
+     */
+    fun onPageObserved(fingerprint: PageFingerprint, timeMs: Long): FrameResult {
+        var best = 0f
+        var bestIndex = -1
+        for ((i, ref) in references.withIndex()) {
+            val sim = PageFingerprint.similarity(ref, fingerprint)
+            if (sim > best) {
+                best = sim
+                bestIndex = i
+            }
+        }
+        lastMetrics = lastMetrics.copy(similarity = best, lineCount = fingerprint.lineCount, charCount = fingerprint.charCount)
+
+        if (pending != null) return result(1f)
+        bigMotionSinceDecision = false
+        decidedAtMs = timeMs
+
+        val isPage = fingerprint.lineCount >= config.minLines && fingerprint.charCount >= config.minChars && fingerprint.hashes.size >= MIN_HASHES
+
+        // シャッターで撮ったページ: 自動では撮り直さないよう、ここで覚える
+        if (adoptUntilMs >= 0) {
+            val inTime = timeMs <= adoptUntilMs
+            adoptUntilMs = -1
+            if (inTime && isPage && best < config.sameSimilarity) {
+                remember(fingerprint)
+                return decide(EngineStatus.WAITING_NEXT_PAGE)
+            }
+        }
 
         // 「撮り直す」を頼まれている: 同じページでも撮る
-        if (retakeArmedAtMs >= 0) {
-            val waited = timeMs - retakeArmedAtMs
-            if (retakeSawMotion || waited >= config.retakeTimeoutMs) {
-                retakeArmedAtMs = -1
-                retakeSawMotion = false
-                return request(CaptureReason.RETAKE, timeMs, signature, strictDiff, sharpness, null, textured)
-            }
-            status = EngineStatus.SETTLING
-            return result(timeMs, strictDiff, sharpness, 1f, null, textured)
+        if (retakeDue(timeMs)) {
+            retakeArmedAtMs = -1
+            candidate = null
+            return request(CaptureReason.RETAKE, timeMs, fingerprint.takeIf { isPage })
         }
 
-        if (frame.mean() < config.minMeanLuma || textured < config.minTexturedFraction) {
-            settledStatus = EngineStatus.NOT_A_PAGE
-            settledAtMs = timeMs
-            evalAnchor = frame
-            status = EngineStatus.NOT_A_PAGE
-            return result(timeMs, strictDiff, sharpness, 0f, null, textured)
+        if (!isPage) {
+            candidate = null
+            return decide(EngineStatus.NOT_A_PAGE)
         }
-
-        if (references.isEmpty()) {
-            return request(CaptureReason.AUTO, timeMs, signature, strictDiff, sharpness, null, textured)
+        if (best >= config.sameSimilarity) {
+            // もう撮ったページ。見るたびに指紋を合わせて、次からもっと確かに見分けられるようにする
+            candidate = null
+            references[bestIndex] = references[bestIndex].mergedWith(fingerprint)
+            return decide(EngineStatus.WAITING_NEXT_PAGE)
         }
-        // 最近撮った何ページかと比べる（新しい順）。前のページに戻って読み直しても、撮り直さない
-        var match: MatchResult? = null
-        for (i in references.indices.reversed()) {
-            val m = matcher.compare(references[i], signature)
-            if (match == null) match = m
-            if (m.same) {
-                settledStatus = EngineStatus.WAITING_NEXT_PAGE
-                evalAnchor = frame
-                status = EngineStatus.WAITING_NEXT_PAGE
-                return result(timeMs, strictDiff, sharpness, 0f, m, textured)
-            }
+        // 新しいページに見える。文字認識は 1 回だけだと読み違いで別のページに見えることがあるので、
+        // 続けて 2 回、同じものが見えたときだけ撮る
+        val first = candidate
+        if (first != null && PageFingerprint.similarity(first, fingerprint) >= config.sameSimilarity) {
+            candidate = null
+            return request(CaptureReason.AUTO, timeMs, first.mergedWith(fingerprint))
         }
-        return request(CaptureReason.AUTO, timeMs, signature, strictDiff, sharpness, match, textured)
+        candidate = fingerprint
+        candidateAtMs = timeMs
+        decided = null
+        status = EngineStatus.SETTLING
+        return result(1f)
     }
 
     /**
      * シャッターや音量ボタンで撮る。いま映っているものをそのまま撮る。
-     * まだコマを 1 つも受け取っていない、または撮っている最中なら null。
+     * 撮っている最中なら null。
      */
     fun requestManual(timeMs: Long): CaptureRequest? {
         if (pending != null) return null
-        val frame = lastFrame ?: return null
         retakeArmedAtMs = -1
-        retakeSawMotion = false
         val req = CaptureRequest(nextRequestId++, CaptureReason.MANUAL, timeMs)
         pending = req
-        pendingSignature = matcher.prepare(frame)
+        pendingFingerprint = null
         movedDuringCapture = false
         status = EngineStatus.CAPTURING
         return req
@@ -351,10 +433,10 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         if (req == null || req.id != requestId) {
             // 待つのをやめたあとで届いた知らせ。撮れていたなら、そのページは覚えておく（もう一度撮らないように）
             if (requestId == timedOutId) {
-                if (saved) timedOutSignature?.let { pushReference(it) }
+                if (saved) timedOutFingerprint?.let { remember(it) }
                 timedOutId = -1
-                timedOutSignature = null
-                if (saved) settledStatus = null
+                timedOutFingerprint = null
+                if (saved) decided = null
             }
             return CaptureOutcome(movedDuringCapture = false)
         }
@@ -363,25 +445,22 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         movedDuringCapture = false
         lastCaptureFinishedMs = timeMs
         if (saved) {
-            pendingSignature?.let {
-                pushReference(it)
-                evalAnchor = it.image
-            }
-            if (moved) {
-                // 撮っているあいだにめくり始めていた。止まったら、いま映っているものを見直す
-                settledStatus = null
-                status = EngineStatus.MOVING
-            } else {
-                settledStatus = EngineStatus.WAITING_NEXT_PAGE
-                status = EngineStatus.WAITING_NEXT_PAGE
-            }
+            val fp = pendingFingerprint
+            if (fp != null) remember(fp) else adoptUntilMs = timeMs + config.adoptWindowMs
+            decided = EngineStatus.WAITING_NEXT_PAGE
+            decidedAtMs = timeMs
+            // 撮っているあいだに動いていたら、止まったときにすぐ見分け直す。
+            // シャッターで撮ったページは、まだ指紋を覚えていないので、止まりしだい見分けて覚える
+            bigMotionSinceDecision = moved || fp == null
+            if (fp == null) decidedAtMs = timeMs - config.recheckMinMs
+            status = EngineStatus.WAITING_NEXT_PAGE
         } else {
-            settledStatus = null
+            decided = null
             status = EngineStatus.SETTLING
             // 「撮り直す」の 1 枚が撮れなかったら、もう一度「撮り直す」の待ちに戻す
-            if (req.reason == CaptureReason.RETAKE) rearmRetake(timeMs)
+            if (req.reason == CaptureReason.RETAKE) retakeArmedAtMs = timeMs - config.retakeDelayMs
         }
-        pendingSignature = null
+        pendingFingerprint = null
         return CaptureOutcome(moved)
     }
 
@@ -396,135 +475,104 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         if (references.size >= 2) {
             val last = references[references.size - 1]
             val previous = references[references.size - 2]
-            if (matcher.compare(previous, last).same) references.removeLast()
+            if (PageFingerprint.similarity(previous, last) >= config.sameSimilarity) references.removeLast()
         }
     }
 
-    /**
-     * 「撮り直す」。直前の 1 枚を消したうえで、次に止まったら同じページでも撮る。
-     * 本を動かして直す時間を取るため、動きがあってから止まるのを待つ。動きが無ければ少し待って撮る。
-     */
+    /** 「撮り直す」。直前の 1 枚を消したうえで、構え直して止まったら、同じページでも撮る。 */
     fun armRetake(timeMs: Long) {
         retakeArmedAtMs = timeMs
-        retakeSawMotion = false
-        settledStatus = null
+        adoptUntilMs = -1
     }
 
-    /** 振動させた。そのあいだの映像の揺れは、めくった動きとして数えない。 */
+    /** 振動させた。そのあいだの揺れは、動きとして数えない。 */
     fun notifyVibration(timeMs: Long, durationMs: Long) {
         blankUntilMs = maxOf(blankUntilMs, timeMs + durationMs)
         wasBlank = true
     }
 
-    /** 最後に撮ったページの、判定用の画像。アプリを開き直しても二度撮りしないよう、保存しておくのに使う。 */
-    fun lastReferenceImage(): LumaImage? = references.lastOrNull()?.image
+    /** 覚えているページの指紋（古い順）。アプリを開き直しても二度撮りしないよう、保存しておくのに使う。 */
+    fun rememberedPages(): List<IntArray> = references.map { it.hashes }
 
-    /** 保存しておいた「最後に撮ったページ」を戻す。 */
-    fun restoreReference(image: LumaImage) {
+    /** 保存しておいた指紋を戻す。 */
+    fun restorePages(pages: List<IntArray>) {
         references.clear()
-        references.addLast(matcher.prepare(image.copy()))
+        for (h in pages.takeLast(config.rememberedPages)) references.addLast(PageFingerprint(h, config.minLines, config.minChars))
     }
 
-    /** 本を切り替えた、画面を開き直した、など。覚えているページを忘れる。 */
+    /** 本を切り替えた。覚えているページを忘れる。 */
     fun reset() {
-        startedAtMs = -1
-        prevFrame = null
-        windowAnchor = null
-        evalAnchor = null
-        settledStatus = null
         references.clear()
-        pending = null
-        pendingSignature = null
-        movedDuringCapture = false
         retakeArmedAtMs = -1
-        retakeSawMotion = false
-        sharpnessTimes.clear()
-        sharpnessValues.clear()
-        lastFrame = null
-        status = EngineStatus.STARTING
+        adoptUntilMs = -1
+        onCameraRestarted()
     }
 
     /** カメラを開き直した。覚えているページは残し、露出とピントの落ち着きだけ待ち直す。 */
     fun onCameraRestarted() {
         startedAtMs = -1
         prevFrame = null
-        windowAnchor = null
-        evalAnchor = null
-        settledStatus = null
+        clearRecent()
+        candidate = null
+        decided = null
+        bigMotionSinceDecision = false
         pending = null
-        pendingSignature = null
+        pendingFingerprint = null
         movedDuringCapture = false
         sharpnessTimes.clear()
         sharpnessValues.clear()
-        lastFrame = null
         status = EngineStatus.STARTING
     }
 
     // ---- 内部 ----
 
     private companion object {
-        const val RETAKE_TAP_IGNORE_MS = 400L
-
-        // CoarseDiff.thresholds の中の位置（4 段階・6 段階）
+        // CoarseDiff.thresholds の中の位置（4 段階）
         const val CELL_4 = 1
-        const val CELL_6 = 2
 
-        /** 覚えておくページの数。行きつ戻りつ読んでも撮り直さないため */
-        const val REMEMBERED_PAGES = 3
+        /** 比べるのに要る、指紋の数値の数。これより少ないと、たまたまの重なりで決まってしまう */
+        const val MIN_HASHES = 20
+
+        /** 新しいページかもしれないと見てから、もう 1 回見るまでにあける時間と、待つ上限 */
+        const val CANDIDATE_GAP_MS = 100L
+        const val CANDIDATE_MAX_AGE_MS = 1500L
     }
 
-    private fun request(
-        reason: CaptureReason,
-        timeMs: Long,
-        signature: PageSignature,
-        diff: DiffStats,
-        sharpness: Float,
-        match: MatchResult?,
-        textured: Float,
-    ): FrameResult {
+    private fun clearRecent() {
+        recentTimes.clear()
+        recentFraction.clear()
+        recentMax.clear()
+        recentDevice.clear()
+    }
+
+    private fun median(values: ArrayDeque<Float>): Float {
+        val sorted = values.sorted()
+        return sorted[sorted.size / 2]
+    }
+
+    private fun retakeDue(timeMs: Long) = retakeArmedAtMs >= 0 && timeMs - retakeArmedAtMs >= config.retakeDelayMs
+
+    private fun decide(result: EngineStatus): FrameResult {
+        decided = result
+        status = result
+        return result(0f)
+    }
+
+    private fun request(reason: CaptureReason, timeMs: Long, fingerprint: PageFingerprint?): FrameResult {
         val req = CaptureRequest(nextRequestId++, reason, timeMs)
         pending = req
-        pendingSignature = signature
+        pendingFingerprint = fingerprint
         movedDuringCapture = false
         status = EngineStatus.CAPTURING
-        return FrameResult(
-            status,
-            req,
-            1f,
-            FrameMetrics(timeMs, diff.strongFraction, diff.meanAbs, diff.gain, sharpness, match, textured),
-        )
+        return FrameResult(status, req, 1f, lastMetrics)
     }
 
-    private fun result(
-        timeMs: Long,
-        diff: DiffStats,
-        sharpness: Float,
-        progress: Float,
-        match: MatchResult? = null,
-        textured: Float? = null,
-    ) = FrameResult(
-        status,
-        null,
-        progress,
-        FrameMetrics(timeMs, diff.strongFraction, diff.meanAbs, diff.gain, sharpness, match, textured),
-    )
+    private fun result(progress: Float, needsPageCheck: Boolean = false) =
+        FrameResult(status, null, progress, lastMetrics, needsPageCheck)
 
-    private fun resetMotion(frame: LumaImage, timeMs: Long) {
-        prevFrame = frame
-        windowAnchor = frame
-        strictSinceMs = timeMs
-        looseSinceMs = timeMs
-    }
-
-    private fun pushReference(signature: PageSignature) {
-        references.addLast(signature)
-        while (references.size > REMEMBERED_PAGES) references.removeFirst()
-    }
-
-    private fun rearmRetake(timeMs: Long) {
-        retakeArmedAtMs = timeMs
-        // 本を直す動きはもう済んでいるので、次に止まったらすぐ撮る
-        retakeSawMotion = true
+    private fun remember(fingerprint: PageFingerprint) {
+        references.addLast(fingerprint)
+        while (references.size > config.rememberedPages) references.removeFirst()
     }
 
     private fun pushSharpness(timeMs: Long, value: Float) {
@@ -541,7 +589,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
      * 止まってからの鮮明さを見て、いまが最大に近く、しかも上がり続けていなければ、合っている。
      */
     private fun focusStable(timeMs: Long): Boolean {
-        val from = maxOf(strictSinceMs, timeMs - config.focusWindowMs)
+        val from = maxOf(unsteadySinceMs, timeMs - config.focusWindowMs)
         val values = ArrayList<Float>()
         for (i in sharpnessTimes.indices) if (sharpnessTimes[i] >= from) values += sharpnessValues[i]
         if (values.size < 6) return false

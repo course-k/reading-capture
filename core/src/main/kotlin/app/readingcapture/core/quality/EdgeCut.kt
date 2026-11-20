@@ -24,10 +24,15 @@ data class EdgeCutConfig(
     val touchAcrossRatio: Float = 1.7f,
     /** 端にかかっているとみなす最小の距離（画像の短い辺に対する割合） */
     val touchMinFraction: Float = 0.004f,
-    /** 行どうしをひとかたまりとみなす間隔（行の太さに対する割合） */
-    val clusterGapRatio: Float = 2.2f,
-    /** 本文からこれより横に離れたかたまりは、となりのページの文字とみなす（行の太さに対する割合） */
-    val facingPageGapRatio: Float = 4.0f,
+    /** 本文の行とみなす長さ（いちばん長い行に対する割合） */
+    val bodyLineRatio: Float = 0.6f,
+    /** 端にかかった行が、本文の幅のこの割合より長ければ、本文そのものが切れている */
+    val bodyCutRatio: Float = 0.4f,
+    /** 欄外の注とみなす文字の小ささ（本文の行の太さに対する割合の上限） */
+    val noteThicknessRatio: Float = 0.87f,
+    /** 欄外の注が切れているとみなすのに要る、端にかかった行の長さ（行の太さに対する割合）と本数 */
+    val noteMinLengthRatio: Float = 3f,
+    val noteMinLines: Int = 2,
 )
 
 data class EdgeCutResult(val sides: Set<Side>) {
@@ -35,88 +40,75 @@ data class EdgeCutResult(val sides: Set<Side>) {
 }
 
 /**
- * 「文字が画像の端にかかっているか」を、文字の行の枠だけから判断する。
+ * 「このページの文字が画像の端にかかっているか」を、文字の行の枠だけから判断する。
  *
- * 1 ページずつ撮ると、となりのページの文字が画像の左右の端に写り込む。これは切れていて当たり前なので、
- * 本文のかたまりからのど（綴じ目）の幅ぶん離れているかたまりは、となりのページとして数えない。
- * 欄外の注は本文のすぐ横にあるので、このページのものとして数える。
+ * 本を開いて 1 ページずつ撮ると、となりのページの行の端が、画像の左右の端に写り込む。
+ * 綴じ目の近くは紙が曲がっていて、本文とのあいだが詰まって見えるので、離れ具合では見分けられない
+ * （実機で、3 文字ぶんの写り込みを「左が切れている」と知らせてしまった）。そこで、左右の端については、
+ *
+ * - 端にかかった行が、本文の幅に近い長さなら、本文そのものが切れている
+ * - 端にかかった行が、本文より小さな字で、ある程度の長さがあり、何行か続いていれば、欄外の注が切れている
+ * - それ以外（本文と同じ大きさの字の、短い切れ端）は、となりのページの写り込みとして数えない
+ *
+ * と判断する。上下の端は、本文の幅の中にある行（本文、柱、ページ番号）だけを見る。
  */
 object EdgeCutCheck {
 
     fun evaluate(lines: List<TextBox>, imageWidth: Int, imageHeight: Int, config: EdgeCutConfig = EdgeCutConfig()): EdgeCutResult {
-        val boxes = lines.filter { it.width >= 3f && it.height >= 3f }
+        var boxes = lines.filter { it.width >= 3f && it.height >= 3f }
         if (boxes.isEmpty()) return EdgeCutResult(emptySet())
 
-        val thickness = boxes.map { min(it.width, it.height) }.sorted()
+        // 縦書きの本（行が縦に長い）は、縦横を入れ替えて同じ決まりで見る
+        val vertical = boxes.count { it.height > it.width * 1.5f } > boxes.size / 2
+        var w = imageWidth.toFloat()
+        var h = imageHeight.toFloat()
+        if (vertical) {
+            boxes = boxes.map { TextBox(it.top, it.left, it.bottom, it.right) }
+            w = imageHeight.toFloat()
+            h = imageWidth.toFloat()
+        }
+
+        val thickness = boxes.map { it.height }.sorted()
         val unit = thickness[thickness.size / 2]
-        val minTouch = min(imageWidth, imageHeight) * config.touchMinFraction
+        val minTouch = min(w, h) * config.touchMinFraction
         val along = max(unit * config.touchAlongRatio, minTouch)
         val across = max(unit * config.touchAcrossRatio, minTouch)
-        val gap = unit * config.clusterGapRatio
 
-        // 近い行どうしをまとめる
-        val parent = IntArray(boxes.size) { it }
-        fun find(i: Int): Int {
-            var r = i
-            while (parent[r] != r) r = parent[r]
-            var c = i
-            while (parent[c] != r) {
-                val n = parent[c]
-                parent[c] = r
-                c = n
-            }
-            return r
-        }
-        for (i in boxes.indices) for (j in i + 1 until boxes.size) {
-            val a = boxes[i]
-            val b = boxes[j]
-            val gx = max(0f, max(a.left, b.left) - min(a.right, b.right))
-            val gy = max(0f, max(a.top, b.top) - min(a.bottom, b.bottom))
-            if (gx <= gap && gy <= gap) parent[find(i)] = find(j)
-        }
-        class Cluster(val members: List<Int>) {
-            val bounds: TextBox
-            val area: Float
+        // 本文: 長い行が占める左右の範囲
+        val maxLength = boxes.maxOf { it.width }
+        val body = boxes.filter { it.width >= maxLength * config.bodyLineRatio }
+        val bodyLeft = body.minOf { it.left }
+        val bodyRight = body.maxOf { it.right }
+        val bodyWidth = bodyRight - bodyLeft
+        val bodyUnit = body.map { it.height }.sorted()[body.size / 2]
 
-            init {
-                var l = Float.MAX_VALUE
-                var t = Float.MAX_VALUE
-                var r = -Float.MAX_VALUE
-                var b = -Float.MAX_VALUE
-                var a = 0f
-                for (m in members) {
-                    val x = boxes[m]
-                    l = min(l, x.left); t = min(t, x.top); r = max(r, x.right); b = max(b, x.bottom)
-                    a += x.width * x.height
-                }
-                bounds = TextBox(l, t, r, b)
-                area = a
-            }
+        fun sideCut(touching: List<TextBox>): Boolean {
+            if (touching.any { it.width >= bodyWidth * config.bodyCutRatio }) return true
+            val notes = touching.count { it.height < bodyUnit * config.noteThicknessRatio && it.width >= it.height * config.noteMinLengthRatio }
+            return notes >= config.noteMinLines
         }
-        val clusters = boxes.indices.groupBy { find(it) }.values.map { Cluster(it) }
-        val main = clusters.maxByOrNull { it.area }!!
 
-        val sides = mutableSetOf<Side>()
-        for (c in clusters) {
-            if (c !== main) {
-                val cb = c.bounds
-                val gx = max(0f, max(cb.left, main.bounds.left) - min(cb.right, main.bounds.right))
-                val hugsSide = cb.left <= along || cb.right >= imageWidth - along
-                // 本文から横に大きく離れ、左右の端に張り付いている: となりのページ
-                if (gx > unit * config.facingPageGapRatio && hugsSide) continue
-            }
-            for (m in c.members) {
-                val box = boxes[m]
-                // 横に長い枠は横書きの行、縦に長い枠は縦書きの行
-                val horizontal = box.width >= box.height
-                val limitX = if (horizontal) along else across
-                val limitY = if (horizontal) across else along
-                if (box.left <= limitX) sides += Side.LEFT
-                if (box.right >= imageWidth - limitX) sides += Side.RIGHT
-                if (box.top <= limitY) sides += Side.TOP
-                if (box.bottom >= imageHeight - limitY) sides += Side.BOTTOM
-            }
+        val found = mutableSetOf<Side>()
+        if (sideCut(boxes.filter { it.left <= along })) found += Side.LEFT
+        if (sideCut(boxes.filter { it.right >= w - along })) found += Side.RIGHT
+
+        // 上下: 本文の幅の中にある行だけ（となりのページの切れ端は数えない）
+        fun inBody(b: TextBox): Boolean {
+            val overlap = min(b.right, bodyRight) - max(b.left, bodyLeft)
+            return overlap >= b.width * 0.5f
         }
-        return EdgeCutResult(sides)
+        if (boxes.any { it.top <= across && inBody(it) }) found += Side.TOP
+        if (boxes.any { it.bottom >= h - across && inBody(it) }) found += Side.BOTTOM
+
+        if (!vertical) return EdgeCutResult(found)
+        // 入れ替えた縦横を戻す
+        return EdgeCutResult(found.map {
+            when (it) {
+                Side.LEFT -> Side.TOP
+                Side.TOP -> Side.LEFT
+                Side.RIGHT -> Side.BOTTOM
+                Side.BOTTOM -> Side.RIGHT
+            }
+        }.toSet())
     }
 }

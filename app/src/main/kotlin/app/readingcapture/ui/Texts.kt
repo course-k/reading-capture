@@ -14,8 +14,8 @@ object Texts {
 
     fun status(status: EngineStatus, justCaptured: Boolean): String = when (status) {
         EngineStatus.STARTING -> "準備しています"
-        EngineStatus.MOVING -> "動いています"
-        EngineStatus.SETTLING -> "止まりました。撮ります"
+        EngineStatus.MOVING -> "ページに向けて、止めてください"
+        EngineStatus.SETTLING -> "そのまま"
         EngineStatus.CAPTURING -> "撮っています"
         EngineStatus.WAITING_NEXT_PAGE -> if (justCaptured) "撮りました。めくってください" else "次のページを待っています"
         EngineStatus.NOT_A_PAGE -> "ページを映してください"

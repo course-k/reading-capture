@@ -31,6 +31,9 @@ class SyntheticPage(
     /** 行の枠（ページ座標）。端の切れの判定のテストに使う。 */
     val lineBoxes: MutableList<FloatArray> = mutableListOf()
 
+    /** 行ごとの文字（乱数で選んだもの）。ページを文字で見分けるテストに使う。[full] を一度読むと入る。 */
+    val textLines: MutableList<String> = mutableListOf()
+
     private val scaledCache = HashMap<Int, BufferedImage>()
 
     fun scaled(width: Int): BufferedImage = scaledCache.getOrPut(width) {
@@ -68,14 +71,14 @@ class SyntheticPage(
         if (options.blankish) {
             // 章の扉のような、文字の少ないページ
             g.font = textFont(charSize * 2)
-            drawLine(g, rnd, bodyLeft + 60, PAGE_H / 3, charSize * 2, 8, lineBoxes)
+            drawLine(g, rnd, bodyLeft + 60, PAGE_H / 3, charSize * 2, 8, lineBoxes, textLines)
             g.dispose()
             return img
         }
         while (y + charSize < bottom) {
             if (!headingDone && rnd.nextInt(6) == 0) {
                 g.font = textFont((charSize * 1.5f).roundToInt())
-                drawLine(g, rnd, bodyLeft, y + 8, (charSize * 1.5f).roundToInt(), 6 + rnd.nextInt(8), lineBoxes)
+                drawLine(g, rnd, bodyLeft, y + 8, (charSize * 1.5f).roundToInt(), 6 + rnd.nextInt(8), lineBoxes, textLines)
                 g.font = font
                 y += pitch * 2
                 headingDone = true
@@ -94,7 +97,7 @@ class SyntheticPage(
             val paragraphEnd = rnd.nextInt(5) == 0
             val n = if (paragraphEnd) 4 + rnd.nextInt(charsPerLine - 6) else charsPerLine
             val indent = if (rnd.nextInt(6) == 0) charSize else 0
-            drawLine(g, rnd, bodyLeft + indent, y, charSize, n - indent / charSize, lineBoxes)
+            drawLine(g, rnd, bodyLeft + indent, y, charSize, n - indent / charSize, lineBoxes, textLines)
             y += pitch
         }
         if (options.marginNotes) {
@@ -105,7 +108,7 @@ class SyntheticPage(
             var ny = top + rnd.nextInt(200)
             repeat(2 + rnd.nextInt(2)) {
                 repeat(4 + rnd.nextInt(5)) {
-                    if (ny + noteSize < bottom) drawLine(g, rnd, noteLeft, ny, noteSize, noteChars, lineBoxes)
+                    if (ny + noteSize < bottom) drawLine(g, rnd, noteLeft, ny, noteSize, noteChars, lineBoxes, textLines)
                     ny += (noteSize * 1.5f).roundToInt()
                 }
                 ny += 120 + rnd.nextInt(160)
@@ -148,11 +151,13 @@ class SyntheticPage(
             size: Int,
             count: Int,
             boxes: MutableList<FloatArray>,
+            texts: MutableList<String>,
         ) {
             if (count <= 0) return
+            val sb = StringBuilder()
+            repeat(count) { sb.append(randomChar(rnd)) }
+            texts.add(sb.toString())
             if (canDrawJapanese) {
-                val sb = StringBuilder()
-                repeat(count) { sb.append(randomChar(rnd)) }
                 // 1 字ずつ等間隔に置く（和文の組み方）
                 for (i in 0 until count) g.drawString(sb[i].toString(), x + i * size, y + size)
             } else {
@@ -228,6 +233,8 @@ data class SceneState(
     /** カメラ全体の揺れ（振動など） */
     val shakeX: Float = 0f,
     val shakeY: Float = 0f,
+    /** スマホ自体の動き（回る速さ、ラジアン毎秒）。null なら、手に持って止めているときの小さな揺れ */
+    val gyro: Float? = null,
 ) {
     /** 「いま映っているページ」の正解。めくりの途中は null。 */
     val truthPageId: Int?

@@ -22,6 +22,7 @@ import app.readingcapture.core.detect.CaptureReason
 import app.readingcapture.core.detect.CaptureRequest
 import app.readingcapture.core.detect.EngineStatus
 import app.readingcapture.core.detect.FrameResult
+import app.readingcapture.core.detect.PageFingerprint
 import app.readingcapture.core.frame.LumaImage
 import app.readingcapture.core.inbox.InboxLayout
 import app.readingcapture.core.inbox.PhotoKind
@@ -90,11 +91,19 @@ class CaptureController(
     // スマホ自体が動いているか（回る速さ・揺れの大きさ）。映像の変化が、スマホの揺れか、写っているものの動きかを見分ける
     @Volatile private var gyroMax = 0f
     @Volatile private var accelMax = 0f
+    // 前のコマからいままでの、回る速さの最大（判定に渡す）。センサーが無ければ -1 のまま
+    @Volatile private var gyroSinceFrame = -1f
+    private val pageReader = TextLineDetector()
     private val motionListener = object : android.hardware.SensorEventListener {
         override fun onSensorChanged(event: android.hardware.SensorEvent) {
             val v = event.values
             val m = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-            if (event.sensor.type == android.hardware.Sensor.TYPE_GYROSCOPE) { if (m > gyroMax) gyroMax = m } else { if (m > accelMax) accelMax = m }
+            if (event.sensor.type == android.hardware.Sensor.TYPE_GYROSCOPE) {
+                if (m > gyroMax) gyroMax = m
+                if (m > gyroSinceFrame) gyroSinceFrame = m
+            } else {
+                if (m > accelMax) accelMax = m
+            }
         }
 
         override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) = Unit
@@ -109,7 +118,7 @@ class CaptureController(
     private var lastNumbersAt = 0L
     private var bound = false
 
-    private val referenceFile = java.io.File(context.filesDir, "capture/last-page.bin")
+    private val referenceFile = java.io.File(context.filesDir, "capture/pages.bin")
 
     init {
         // カメラが保存したのに台帳に載る前に落ちた写真を拾う
@@ -167,8 +176,15 @@ class CaptureController(
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .setTargetRotation(Surface.ROTATION_0)
                     .build()
-                // 判定用の映像は既定の 640×480。大きくすると、写真のほうの大きさが制限される
+                // 判定用の映像は 1280×960。止まったときに、このコマの文字を読んでページを見分けるので、
+                // 文字が読める大きさが要る。これ以上大きくすると、写真のほうの大きさが制限される
                 val analysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder()
+                            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                            .setResolutionStrategy(ResolutionStrategy(android.util.Size(1280, 960), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+                            .build(),
+                    )
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                 analysis.setAnalyzer(analysisExecutor, ::analyze)
@@ -251,6 +267,7 @@ class CaptureController(
 
     // ---- 内部（判定用のスレッド） ----
 
+    @androidx.annotation.OptIn(markerClass = [androidx.camera.core.ExperimentalGetImage::class])
     private fun analyze(proxy: ImageProxy) {
         try {
             val plane = proxy.planes[0]
@@ -265,8 +282,26 @@ class CaptureController(
             val (dw, dh) = LumaImage.scaledSize(w, h, WORK_LONG_SIDE)
             val frame = LumaImage.fromPlane(scratch, w, h, rowStride, plane.pixelStride, dw, dh)
             val now = SystemClock.elapsedRealtime()
+            val motion = gyroSinceFrame.takeIf { it >= 0f }
+            if (motion != null) gyroSinceFrame = 0f
             probe(frame, now)
-            val result = engine.onFrame(frame, now)
+            var result = engine.onFrame(frame, now, motion)
+            if (result.needsPageCheck) {
+                // 止まった。このコマの文字を読んで、どのページかを見分ける
+                val image = proxy.image
+                val fingerprint = if (image == null) PageFingerprint.of(emptyList()) else
+                    runCatching { pageReader.fingerprint(image, proxy.imageInfo.rotationDegrees) }
+                        .onFailure { diag.log("read_error", "error" to it.toString()) }
+                        .getOrDefault(PageFingerprint.of(emptyList()))
+                val after = SystemClock.elapsedRealtime()
+                result = engine.onPageObserved(fingerprint, after)
+                val m = result.metrics
+                diag.log(
+                    "check", "ms" to after - now, "lines" to fingerprint.lineCount, "chars" to fingerprint.charCount, "hashes" to fingerprint.hashes.size,
+                    "sim" to m.similarity, "status" to result.status.name, "request" to result.request?.reason?.name,
+                    "cell" to m.cellFraction, "cmax" to m.cellMax, "gyro" to m.deviceMotion, "sharp" to m.sharpness,
+                )
+            }
             result.request?.let { takePicture(it) }
             publish(result, now)
         } catch (e: Exception) {
@@ -283,7 +318,7 @@ class CaptureController(
     private fun probe(frame: LumaImage, now: Long) {
         val prev = probePrev
         val anchor = probeAnchor
-        if (prev != null && anchor != null && now - probeLoggedAt >= 250) {
+        if (prev != null && anchor != null && now - probeLoggedAt >= 500) {
             probeLoggedAt = now
             val fine = app.readingcapture.core.detect.FrameDiff.compare(prev, frame)
             val fineA = app.readingcapture.core.detect.FrameDiff.compare(anchor, frame)
@@ -309,20 +344,11 @@ class CaptureController(
 
     private fun publish(result: FrameResult, now: Long) {
         val m = result.metrics
-        // 判定したコマ（同じページか・ページらしいかを見たコマ）は記録に残す
-        if (m.match != null || m.texturedFraction != null) {
-            diag.log(
-                "decide", "status" to result.status.name, "request" to result.request?.reason?.name,
-                "strong" to m.strongFraction, "sharp" to m.sharpness, "tex" to m.texturedFraction,
-                "same" to m.match?.same, "identical" to m.match?.identical, "matched" to m.match?.matchedBlocks,
-                "eligible" to m.match?.eligibleBlocks, "sx" to m.match?.shiftX, "sy" to m.match?.shiftY,
-            )
-        }
         val current = _ui.value
         val showNumbers = settings.showNumbers
         val numbers = if (showNumbers && now - lastNumbersAt > 200) {
             lastNumbersAt = now
-            "動き %.3f  差 %.1f  明るさ比 %.2f  鮮明さ %.0f".format(m.strongFraction, m.meanAbs, m.gain, m.sharpness)
+            "映像 %.3f / %.0f  スマホ %.2f  鮮明さ %.0f".format(m.cellFraction, m.cellMax, m.deviceMotion ?: -1f, m.sharpness)
         } else if (!showNumbers) null else current.numbers
         if (result.status != current.status || abs(result.settleProgress - lastPublishedProgress) > 0.04f || numbers != current.numbers) {
             lastPublishedProgress = result.settleProgress
@@ -330,16 +356,21 @@ class CaptureController(
         }
     }
 
-    /** 最後に撮ったページの、判定用の小さな画像（明るさだけ、320 画素）を書いておく。 */
+    /**
+     * 最近撮ったページの指紋（数値の集まり。文字ではない）を書いておく。
+     * アプリを開き直しても、同じページを二度撮りしないため。
+     */
     private fun saveReference() {
-        val image = engine.lastReferenceImage() ?: return
+        val pages = engine.rememberedPages()
         runCatching {
             referenceFile.parentFile?.mkdirs()
             java.io.DataOutputStream(referenceFile.outputStream().buffered()).use { out ->
                 out.writeLong(System.currentTimeMillis())
-                out.writeInt(image.width)
-                out.writeInt(image.height)
-                out.write(image.data, 0, image.width * image.height)
+                out.writeInt(pages.size)
+                for (p in pages) {
+                    out.writeInt(p.size)
+                    for (v in p) out.writeInt(v)
+                }
             }
         }
     }
@@ -349,12 +380,16 @@ class CaptureController(
         runCatching {
             java.io.DataInputStream(referenceFile.inputStream().buffered()).use { input ->
                 val savedAt = input.readLong()
-                val w = input.readInt()
-                val h = input.readInt()
-                if (System.currentTimeMillis() - savedAt > REFERENCE_MAX_AGE_MS || w !in 1..4096 || h !in 1..4096) return
-                val data = ByteArray(w * h)
-                input.readFully(data)
-                engine.restoreReference(LumaImage(w, h, data))
+                if (System.currentTimeMillis() - savedAt > REFERENCE_MAX_AGE_MS) return
+                val count = input.readInt()
+                if (count !in 0..32) return
+                val pages = ArrayList<IntArray>()
+                repeat(count) {
+                    val n = input.readInt()
+                    if (n !in 0..20000) return
+                    pages += IntArray(n) { input.readInt() }
+                }
+                engine.restorePages(pages)
             }
         }
     }

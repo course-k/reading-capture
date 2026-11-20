@@ -50,6 +50,11 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+        <!-- 合わせ込み用の合図を受ける口。Mac の adb（shell）からだけ送れる -->
+        <receiver
+            android:name=".diag.DiagReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 
 </manifest>

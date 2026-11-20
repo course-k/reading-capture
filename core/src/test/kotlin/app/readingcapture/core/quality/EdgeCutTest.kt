@@ -86,4 +86,37 @@ class EdgeCutTest {
     fun `文字が無ければ、切れていない`() {
         assertEquals(emptySet<Side>(), EdgeCutCheck.evaluate(emptyList(), 1000, 1300).sides)
     }
+
+    @Test
+    fun `となりのページの行の端が、本文のすぐそばに写り込んでいても、切れているとは言わない`() {
+        // 実機（Pixel 6a、手持ち）で「左の端に文字がかかっています」と誤って知らせたときの、行の枠の並び。
+        // 左端の 3 つ（幅 17〜21）が、となりのページの行の端。綴じ目の近くは紙が曲がって、本文（左端 59）との間が詰まって見える
+        assertEquals(emptySet<Side>(), EdgeCutCheck.evaluate(realFacingPageIntrusion, 1152, 1536).sides)
+    }
+
+    @Test
+    fun `縦書きの本でも、切れている側を知らせる`() {
+        // 横書きの合成ページを 90 度回して、縦書きの並びにする
+        val (boxes, w, h) = frame(120f, 0f, this.w, this.h, plain to 0f)
+        val rotated = boxes.map { TextBox(it.top, it.left, it.bottom, it.right) }
+        assertEquals(setOf(Side.TOP), EdgeCutCheck.evaluate(rotated, h, w).sides)
+    }
+
+    private val realFacingPageIntrusion = listOf(
+        TextBox(5f, 518f, 26f, 531f), TextBox(5f, 555f, 22f, 568f), TextBox(7f, 592f, 28f, 606f),
+        TextBox(59f, 82f, 337f, 116f), TextBox(78f, 115f, 735f, 151f), TextBox(61f, 152f, 737f, 184f),
+        TextBox(63f, 186f, 736f, 216f), TextBox(66f, 222f, 613f, 247f), TextBox(84f, 252f, 736f, 283f),
+        TextBox(59f, 286f, 742f, 317f), TextBox(69f, 323f, 739f, 347f), TextBox(68f, 351f, 360f, 378f),
+        TextBox(80f, 387f, 744f, 413f), TextBox(69f, 420f, 737f, 443f), TextBox(76f, 455f, 733f, 476f),
+        TextBox(68f, 485f, 741f, 510f), TextBox(76f, 520f, 734f, 540f), TextBox(78f, 552f, 736f, 571f),
+        TextBox(80f, 586f, 137f, 603f), TextBox(90f, 613f, 742f, 637f), TextBox(74f, 645f, 659f, 668f),
+        TextBox(84f, 709f, 354f, 731f), TextBox(93f, 736f, 740f, 762f), TextBox(88f, 766f, 724f, 792f),
+        TextBox(89f, 798f, 572f, 823f), TextBox(106f, 824f, 729f, 855f), TextBox(90f, 854f, 731f, 886f),
+        TextBox(88f, 884f, 738f, 917f), TextBox(94f, 921f, 481f, 946f), TextBox(112f, 948f, 555f, 979f),
+        TextBox(94f, 974f, 664f, 1011f), TextBox(725f, 70f, 905f, 85f), TextBox(89f, 1002f, 732f, 1039f),
+        TextBox(97f, 1042f, 292f, 1069f), TextBox(91f, 1069f, 557f, 1098f), TextBox(100f, 1100f, 515f, 1126f),
+        TextBox(111f, 1120f, 721f, 1159f), TextBox(101f, 1162f, 349f, 1186f), TextBox(103f, 1187f, 550f, 1215f),
+        TextBox(104f, 1213f, 623f, 1244f), TextBox(127f, 1235f, 735f, 1277f), TextBox(102f, 1275f, 546f, 1303f),
+        TextBox(858f, 1329f, 882f, 1342f),
+    )
 }
