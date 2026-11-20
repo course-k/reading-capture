@@ -124,6 +124,11 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     private var nextRequestId = 1L
     private var lastCaptureFinishedMs = Long.MIN_VALUE / 2
     private var blankUntilMs = Long.MIN_VALUE / 2
+    private var wasBlank = false
+
+    // 撮り終わりの知らせが来ないまま待つのをやめた合図。遅れて知らせが届いたら、そのページを覚える
+    private var timedOutId = -1L
+    private var timedOutSignature: PageSignature? = null
 
     private var retakeArmedAtMs = -1L
     private var retakeSawMotion = false
@@ -140,6 +145,9 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     /** 撮ったページを覚えているか。 */
     val hasReference: Boolean get() = references.isNotEmpty()
 
+    /** 撮る合図を出して、撮り終わりを待っているところか。 */
+    val isCapturing: Boolean get() = pending != null
+
     /** 判定用の大きさに縮めたコマを渡す。 */
     fun onFrame(frame: LumaImage, timeMs: Long): FrameResult {
         if (startedAtMs < 0) startedAtMs = timeMs
@@ -152,7 +160,13 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         // 自分の振動でスマホが揺れているあいだは、基準を取り直すだけにする
         if (timeMs < blankUntilMs) {
             resetAnchors(frame, timeMs)
+            wasBlank = true
             return result(timeMs, DiffStats(0f, 0f, 1f), sharpness, 0f)
+        }
+        if (wasBlank) {
+            // 振動のあいだは動きを見ていない。そのあいだにめくり終えていても気づけるよう、止まったら 1 回だけ見直す
+            wasBlank = false
+            if (pending == null) settledStatus = null
         }
 
         val strict = strictAnchor
@@ -184,6 +198,9 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         pending?.let { p ->
             if (timeMs - p.timeMs > config.captureTimeoutMs) {
                 // 撮り終わりの知らせが来ない。撮れなかったものとして、判定に戻る
+                timedOutId = p.id
+                timedOutSignature = pendingSignature
+                if (p.reason == CaptureReason.RETAKE) rearmRetake(timeMs)
                 pending = null
                 pendingSignature = null
                 movedDuringCapture = false
@@ -259,15 +276,19 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             return result(timeMs, strictDiff, sharpness, 0f, null, textured)
         }
 
-        val reference = references.lastOrNull()
-        if (reference == null) {
+        if (references.isEmpty()) {
             return request(CaptureReason.AUTO, timeMs, signature, strictDiff, sharpness, null, textured)
         }
-        val match = matcher.compare(reference, signature)
-        if (match.same) {
-            settledStatus = EngineStatus.WAITING_NEXT_PAGE
-            status = EngineStatus.WAITING_NEXT_PAGE
-            return result(timeMs, strictDiff, sharpness, 0f, match, textured)
+        // 最近撮った何ページかと比べる（新しい順）。前のページに戻って読み直しても、撮り直さない
+        var match: MatchResult? = null
+        for (i in references.indices.reversed()) {
+            val m = matcher.compare(references[i], signature)
+            if (match == null) match = m
+            if (m.same) {
+                settledStatus = EngineStatus.WAITING_NEXT_PAGE
+                status = EngineStatus.WAITING_NEXT_PAGE
+                return result(timeMs, strictDiff, sharpness, 0f, m, textured)
+            }
         }
         return request(CaptureReason.AUTO, timeMs, signature, strictDiff, sharpness, match, textured)
     }
@@ -298,18 +319,35 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
      */
     fun onCaptureFinished(requestId: Long, timeMs: Long, saved: Boolean): CaptureOutcome {
         val req = pending
-        if (req == null || req.id != requestId) return CaptureOutcome(movedDuringCapture = false)
+        if (req == null || req.id != requestId) {
+            // 待つのをやめたあとで届いた知らせ。撮れていたなら、そのページは覚えておく（もう一度撮らないように）
+            if (requestId == timedOutId) {
+                if (saved) timedOutSignature?.let { pushReference(it) }
+                timedOutId = -1
+                timedOutSignature = null
+                if (saved) settledStatus = null
+            }
+            return CaptureOutcome(movedDuringCapture = false)
+        }
         val moved = movedDuringCapture
         pending = null
         movedDuringCapture = false
         lastCaptureFinishedMs = timeMs
         if (saved) {
             pendingSignature?.let { pushReference(it) }
-            settledStatus = EngineStatus.WAITING_NEXT_PAGE
-            status = EngineStatus.WAITING_NEXT_PAGE
+            if (moved) {
+                // 撮っているあいだにめくり始めていた。止まったら、いま映っているものを見直す
+                settledStatus = null
+                status = EngineStatus.MOVING
+            } else {
+                settledStatus = EngineStatus.WAITING_NEXT_PAGE
+                status = EngineStatus.WAITING_NEXT_PAGE
+            }
         } else {
             settledStatus = null
             status = EngineStatus.SETTLING
+            // 「撮り直す」の 1 枚が撮れなかったら、もう一度「撮り直す」の待ちに戻す
+            if (req.reason == CaptureReason.RETAKE) rearmRetake(timeMs)
         }
         pendingSignature = null
         return CaptureOutcome(moved)
@@ -343,6 +381,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     /** 振動させた。そのあいだの映像の揺れは、めくった動きとして数えない。 */
     fun notifyVibration(timeMs: Long, durationMs: Long) {
         blankUntilMs = maxOf(blankUntilMs, timeMs + durationMs)
+        wasBlank = true
     }
 
     /** 最後に撮ったページの、判定用の画像。アプリを開き直しても二度撮りしないよう、保存しておくのに使う。 */
@@ -391,6 +430,9 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     private companion object {
         const val RETAKE_TAP_IGNORE_MS = 400L
+
+        /** 覚えておくページの数。行きつ戻りつ読んでも撮り直さないため */
+        const val REMEMBERED_PAGES = 3
     }
 
     private fun request(
@@ -439,7 +481,13 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     private fun pushReference(signature: PageSignature) {
         references.addLast(signature)
-        while (references.size > 2) references.removeFirst()
+        while (references.size > REMEMBERED_PAGES) references.removeFirst()
+    }
+
+    private fun rearmRetake(timeMs: Long) {
+        retakeArmedAtMs = timeMs
+        // 本を直す動きはもう済んでいるので、次に止まったらすぐ撮る
+        retakeSawMotion = true
     }
 
     private fun pushSharpness(timeMs: Long, value: Float) {

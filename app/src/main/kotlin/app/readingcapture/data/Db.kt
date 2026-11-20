@@ -159,8 +159,9 @@ class Db(context: Context, name: String? = "capture.db") : SQLiteOpenHelper(cont
         try {
             val p = queryPhotos("id = ?", arrayOf(id), null, null).firstOrNull() ?: return null
             fileName = p.fileName
-            // 中身（blob）を上げ始めていたら、取り込み箱に入ったかもしれない。確かめて消す側に倒す
-            if (p.state == PhotoState.UPLOADED || p.blobSha != null) {
+            // 仕上げ済みの写真は、いま上げている最中かもしれない（中身を上げ終える前でも、同じ回のコミットに入る）。
+            // 取り込み箱を確かめて消す側に倒す。仕上げ前の写真は、まだ上げる対象になっていないので、その場で消す
+            if (p.state != PhotoState.RAW) {
                 db.update("photo", ContentValues().apply {
                     put("state", PhotoState.DELETE_PENDING.name)
                     putNull("file_name")
@@ -292,7 +293,7 @@ class Db(context: Context, name: String? = "capture.db") : SQLiteOpenHelper(cont
     }
 
     fun hasWorkToSync(): Boolean =
-        count("photo", "state IN (?, ?)", arrayOf(PhotoState.READY.name, PhotoState.DELETE_PENDING.name)) > 0 ||
+        count("photo", "state IN (?, ?, ?)", arrayOf(PhotoState.RAW.name, PhotoState.READY.name, PhotoState.DELETE_PENDING.name)) > 0 ||
             count("note", "state IN (?, ?)", arrayOf(NoteState.PENDING.name, NoteState.DELETE_PENDING.name)) > 0
 
     // ---- 内部 ----

@@ -92,7 +92,7 @@ USB（adb）で入れるアプリは、Android の開発者確認の対象外（
 ```
 
 - `core` のテストは、乱数で選んだ文字を並べた合成のページを使う。本物の本のページは使わない。明るさの変化、手や指の写り込み、影、ページの反り、めくりかけて戻す動き、ピントの揺れ、撮れたときの振動の揺れを、台本にした映像で流す
-- `./gradlew :core:test --tests '*SampleGenerator*' -Psamples=1` で、エミュレーターのカメラに見せる合成の画像と映像のコマを `core/build/samples/` に書き出す。エミュレーターは `-camera-back videofile:<動画>` で動画をカメラの映像にできる
+- `scripts/make-sample-video.sh` で、エミュレーターのカメラに見せる合成のページの映像を `core/build/samples/pages-portrait.mp4` に作る。エミュレーターは `-camera-back videofile:<動画の絶対パス>` で動画をカメラの映像にできる（動画が無いと、カメラの映像は紫一色になる）
 - 環境変数 `INBOX_LIVE_REPO` と `INBOX_LIVE_TOKEN` を渡して `--tests '*LiveGitHubTest*'` を動かすと、本物の GitHub に対して上げる処理を確かめる（乱数の中身を `selftest/` の下に置いて消す）
 
 ## 合わせ込み

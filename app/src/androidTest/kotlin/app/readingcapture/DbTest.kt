@@ -57,12 +57,24 @@ class DbTest {
     }
 
     @Test
-    fun まだ上げていない写真を消すと_台帳からも消える() {
+    fun 仕上げ前の写真を消すと_台帳からも消える() {
+        db.insertPhoto(photo("p1"))
+        assertTrue("仕上げ前の写真も、上げる仕事として数える", db.hasWorkToSync())
+        db.deletePhoto("p1")
+        assertNull(db.photo("p1"))
+        assertFalse(db.hasWorkToSync())
+    }
+
+    @Test
+    fun 仕上げ済みの写真を消すと_上げる前でも_取り込み箱を確かめて消す予約になる() {
+        // 上げている最中に消した写真が、取り込み箱に残らないように
         db.insertPhoto(photo("p1"))
         db.markPhotoReady("p1", "p1.jpg", 1, 1, 1, PhotoWarnings())
         assertEquals("p1.jpg", db.deletePhoto("p1"))
-        assertNull(db.photo("p1"))
-        assertFalse(db.hasWorkToSync())
+        assertEquals(PhotoState.DELETE_PENDING, db.photo("p1")!!.state)
+        assertTrue(db.hasWorkToSync())
+        assertEquals(0, db.countPhotosOfBook("book-a", 0))
+        assertEquals(0, db.syncCounts(0).pending)
     }
 
     @Test
@@ -89,6 +101,17 @@ class DbTest {
         // 上げ終わった知らせが、消したあとに届く
         db.markPhotoUploaded("p1", 5000)
         assertEquals("消した写真が「上がった」に戻らない", PhotoState.DELETE_PENDING, db.photo("p1")!!.state)
+    }
+
+    @Test
+    fun 上げ終わった知らせが_消したあとに届いても_消す予約のまま() {
+        db.insertPhoto(photo("p1"))
+        db.markPhotoReady("p1", "p1.jpg", 1, 1, 1, PhotoWarnings())
+        db.deletePhoto("p1")
+        db.markPhotoUploaded("p1", 5000)
+        val p = db.photo("p1")!!
+        assertEquals(PhotoState.DELETE_PENDING, p.state)
+        assertEquals("上がった事実は残す（取り込み箱から消す必要がある）", 5000L, p.uploadedAt)
     }
 
     @Test

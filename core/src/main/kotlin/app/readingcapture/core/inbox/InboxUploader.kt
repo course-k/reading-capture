@@ -43,6 +43,29 @@ class InboxUploader(
     private val retryPauseMs: Long = 1500,
     private val sleep: (Long) -> Unit = { Thread.sleep(it) },
 ) {
+    // 自分で先へ進めた、古い先頭。読み取りがこれを返したら、まだ追いついていない
+    private val superseded = LinkedHashSet<String>()
+
+    /**
+     * 取り込み箱のいまの先頭を読む。自分が進める前の先頭が返ってきたら、追いつくまで待つ。
+     * これを待たないと、置いたばかりのファイルを「無い」と見て、消すのを済んだことにしてしまう。
+     */
+    private fun freshHead(): Head {
+        var head = client.head()
+        var tries = 0
+        while (head.commitSha in superseded && tries < STALE_READ_TRIES) {
+            tries++
+            sleep(maxOf(retryPauseMs, 1L) * tries)
+            head = client.head()
+        }
+        if (head.commitSha in superseded) throw InboxException.Server(503)
+        return head
+    }
+
+    private fun advanced(from: String) {
+        superseded += from
+        while (superseded.size > 50) superseded.remove(superseded.first())
+    }
 
     /**
      * @param onBlobUploaded 中身を 1 つ上げ終えるたびに呼ぶ（sha を覚えておけば、やり直しで上げ直さずに済む）
@@ -56,7 +79,7 @@ class InboxUploader(
     ): UploadResult {
         if (puts.isEmpty() && deletes.isEmpty()) return UploadResult(emptySet(), null)
 
-        var head = client.head()
+        var head = freshHead()
         var files = client.listFiles(head.treeSha)
 
         // 中身を上げる（もう取り込み箱にあるもの、上げ終わっているものは飛ばす）
@@ -110,14 +133,21 @@ class InboxUploader(
             if (treeSha == head.treeSha) return UploadResult(allKeys, null)
             val commitSha = client.createCommit(message, treeSha, head.commitSha)
             pause()
-            if (client.advanceBranch(commitSha)) return UploadResult(allKeys, commitSha)
+            if (client.advanceBranch(commitSha)) {
+                advanced(head.commitSha)
+                return UploadResult(allKeys, commitSha)
+            }
 
             // ほかの誰かが先にブランチを進めていた。今の中身を取り直して、その上に載せ直す
             if (attempt >= maxAttempts) throw InboxException.Unexpected(422, "取り込み箱がほかから続けて書き換えられていて、載せられません")
             if (retryPauseMs > 0) sleep(retryPauseMs * attempt)
-            head = client.head()
+            head = freshHead()
             files = client.listFiles(head.treeSha)
         }
+    }
+
+    private companion object {
+        const val STALE_READ_TRIES = 8
     }
 
     private fun pause() {

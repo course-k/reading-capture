@@ -43,6 +43,11 @@ class FakeGitHub : AutoCloseable {
     /** ブランチを進める呼び出しを、進めたうえで「返事が届かなかった」ことにする回数。 */
     var loseRefResponse = 0
 
+    /** ブランチを進めたあと、先頭の読み取りにこの回数だけ古い内容を返す（実物で起きる遅れ）。 */
+    var staleReadsAfterUpdate = 0
+    private var staleReadsLeft = 0
+    private var staleHead: String? = null
+
     /** ブランチを進める呼び出しの直前に呼ぶ（ほかの誰かの push を割り込ませる）。 */
     var beforeRefUpdate: (() -> Unit)? = null
 
@@ -120,8 +125,13 @@ class FakeGitHub : AutoCloseable {
                 method == "GET" && rest == "" ->
                     respond(ex, 200, buildJsonObject { put("permissions", buildJsonObject { put("push", pushAllowed) }) }.toString())
 
-                method == "GET" && rest == "/git/ref/heads/main" ->
-                    respond(ex, 200, buildJsonObject { put("object", buildJsonObject { put("sha", headCommit) }) }.toString())
+                method == "GET" && rest == "/git/ref/heads/main" -> {
+                    val sha = if (staleReadsLeft > 0 && staleHead != null) {
+                        staleReadsLeft--
+                        staleHead!!
+                    } else headCommit
+                    respond(ex, 200, buildJsonObject { put("object", buildJsonObject { put("sha", sha) }) }.toString())
+                }
 
                 method == "GET" && rest.startsWith("/git/commits/") -> {
                     val c = commits[rest.substringAfterLast('/')] ?: return respond(ex, 404, """{"message":"Not Found"}""")
@@ -180,6 +190,8 @@ class FakeGitHub : AutoCloseable {
                     val sha = json!!["sha"]!!.jsonPrimitive.content
                     val c = commits[sha] ?: return respond(ex, 422, """{"message":"Object does not exist"}""")
                     if (c.second != headCommit) return respond(ex, 422, """{"message":"Update is not a fast forward"}""")
+                    staleHead = headCommit
+                    staleReadsLeft = staleReadsAfterUpdate
                     headCommit = sha
                     if (loseRefResponse > 0) {
                         loseRefResponse--

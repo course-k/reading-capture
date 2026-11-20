@@ -404,4 +404,48 @@ class CaptureEngineTest {
         second.run(script)
         assertEquals(describe(second), listOf<Int?>(2), second.captures.pageIds())
     }
+
+    @Test
+    fun `撮っている最中にさっとめくり終えても、新しいページを撮る`() {
+        // 撮る合図の直後にめくり始め、撮れたときの振動が終わる前にめくり終える。
+        // 振動のあいだは動きを見ていないので、見直さないと新しいページを撮らないまま止まる
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 1500)
+        script.turn(pages[0], pages[1], turnMs = 300, handInMs = 100, handOutMs = 100, relaxMs = 30)
+        script.hold(SceneState(pages[1]), 4000)
+        val sim = Simulation(CaptureEngine(), captureLatencyMs = 600, vibrationMs = 400)
+        sim.run(script)
+        assertEquals(describe(sim), 2, sim.captures.size)
+        assertEquals(describe(sim), 2, sim.captures.last().pageId)
+    }
+
+    @Test
+    fun `前のページに戻って読み直しても、撮り直さない`() {
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 2500)
+        script.turn(pages[0], pages[1])
+        script.hold(SceneState(pages[1]), 2500)
+        script.turn(pages[1], pages[0]) // 戻る
+        script.hold(SceneState(pages[0], dx = 3f), 2500)
+        script.turn(pages[0], pages[1]) // 進み直す
+        script.hold(SceneState(pages[1], dy = -2f), 2500)
+        script.turn(pages[1], pages[2])
+        script.hold(SceneState(pages[2]), 2500)
+        val sim = run(script)
+        assertEquals(describe(sim), listOf<Int?>(1, 2, 3), sim.captures.pageIds())
+    }
+
+    @Test
+    fun `撮り直すの 1 枚が撮れなかったら、もう一度撮る`() {
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 2500)
+        script.act {
+            it.failFirstCaptures = 1
+            it.engine.armRetake(it.nowMs)
+        }
+        script.hold(SceneState(pages[0]), 8000)
+        val sim = run(script)
+        assertEquals(describe(sim), listOf<Int?>(1, 1), sim.captures.pageIds())
+        assertEquals(CaptureReason.RETAKE, sim.captures[1].reason)
+    }
 }

@@ -78,7 +78,8 @@ class CaptureController(
     val ui: StateFlow<CaptureUi> = _ui
 
     private val engine = CaptureEngine()
-    private val analysisExecutor = Executors.newSingleThreadExecutor { Thread(it, "capture-analysis") }
+    private val analysisExecutor = Executors.newSingleThreadScheduledExecutor { Thread(it, "capture-analysis") }
+    private var warningDeferred = false
     private val ioExecutor = Executors.newSingleThreadExecutor { Thread(it, "capture-io") }
     private val mainExecutor = ContextCompat.getMainExecutor(context)
 
@@ -113,8 +114,10 @@ class CaptureController(
         // アプリを開き直しても同じページを二度撮りしないよう、最後に撮ったページを思い出す（30 分以内のものだけ）
         analysisExecutor.execute { restoreReference() }
         processor.onWarning = { _, _ ->
-            val ms = haptics.warning()
-            analysisExecutor.execute { engine.notifyVibration(SystemClock.elapsedRealtime(), ms + 100) }
+            analysisExecutor.execute {
+                // 次の 1 枚を撮っている最中に揺らすと、その 1 枚がぶれる。撮り終わるまで待つ
+                if (engine.isCapturing) warningDeferred = true else vibrateWarning()
+            }
         }
     }
 
@@ -302,6 +305,12 @@ class CaptureController(
         }
     }
 
+    /** 判定用のスレッドから呼ぶ。 */
+    private fun vibrateWarning() {
+        val ms = haptics.warning()
+        engine.notifyVibration(SystemClock.elapsedRealtime(), ms + 100)
+    }
+
     private fun takePicture(request: CaptureRequest) {
         val capture = imageCapture
         if (capture == null) {
@@ -336,6 +345,10 @@ class CaptureController(
                         // 振動は写真を撮り終えてから（撮っている最中に揺らさない）
                         val ms = haptics.captured()
                         engine.notifyVibration(now, ms + 150)
+                        if (warningDeferred) {
+                            warningDeferred = false
+                            analysisExecutor.schedule({ if (engine.isCapturing) warningDeferred = true else vibrateWarning() }, ms + 200, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        }
                         diag.log("captured", "id" to id, "reason" to request.reason.name, "latencyMs" to latency, "moved" to outcome.movedDuringCapture, "rawBytes" to raw.length())
                         processor.enqueue(id, outcome.movedDuringCapture)
                     }
@@ -344,7 +357,13 @@ class CaptureController(
                 override fun onError(exception: ImageCaptureException) {
                     raw.delete()
                     diag.log("capture_error", "reason" to request.reason.name, "code" to exception.imageCaptureError, "error" to exception.message)
-                    analysisExecutor.execute { engine.onCaptureFinished(request.id, SystemClock.elapsedRealtime(), saved = false) }
+                    analysisExecutor.execute {
+                        engine.onCaptureFinished(request.id, SystemClock.elapsedRealtime(), saved = false)
+                        if (warningDeferred) {
+                            warningDeferred = false
+                            vibrateWarning()
+                        }
+                    }
                 }
             },
         )

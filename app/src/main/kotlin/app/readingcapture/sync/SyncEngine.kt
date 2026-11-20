@@ -84,6 +84,12 @@ class SyncEngine(
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val container = (applicationContext as App).container
+        // 撮った直後にアプリが落とされた場合、仕上げ（起動時に拾われる）が済むのを待ってから上げる
+        var waited = 0
+        while (waited < 30 && container.db.photosInState(app.readingcapture.data.PhotoState.RAW).isNotEmpty()) {
+            kotlinx.coroutines.delay(1000)
+            waited++
+        }
         when (container.syncRunner.runOnce()) {
             SyncOutcome.Done, SyncOutcome.Blocked -> Result.success()
             is SyncOutcome.More, is SyncOutcome.Retry -> Result.retry()

@@ -82,6 +82,11 @@ class SyncRunner(
     val status: StateFlow<SyncStatus> = _status
 
     private var lastBookRefreshMs = 0L
+    private val bookLock = Any()
+
+    // 上げる役は、鍵と取り込み箱が同じあいだ使い回す（自分が進めた先頭を覚えていて、古い読み取りを見分けるため）
+    private var uploaderKey: String? = null
+    private var uploader: InboxUploader? = null
 
     /** 取り込み箱につなぐ準備ができているか。 */
     fun clientOrNull(): GitHubClient? {
@@ -90,15 +95,14 @@ class SyncRunner(
         return GitHubClient(http, InboxConfig(owner, repo, token))
     }
 
-    /** 本の一覧と目次を読み直す。 */
-    @Synchronized
-    fun refreshBooks(force: Boolean): Boolean {
+    /** 本の一覧と目次を読み直す。上げる処理が長引いていても待たされないよう、別の錠にしてある。 */
+    fun refreshBooks(force: Boolean): Boolean = synchronized(bookLock) {
         val client = clientOrNull() ?: return false
         val now = System.currentTimeMillis()
         if (!force && now - lastBookRefreshMs < BOOK_REFRESH_INTERVAL_MS) return false
         val changed = books.refresh(client)
         lastBookRefreshMs = now
-        return changed
+        changed
     }
 
     @Synchronized
@@ -107,13 +111,18 @@ class SyncRunner(
         if (client == null) {
             // 取り込み箱に一度も上げていないものの「消す」は、端末の中だけで済ませる
             for (n in db.notesInState(NoteState.DELETE_PENDING)) if (!n.everUploaded) db.removeNoteRow(n.id)
+            for (p in db.photosInState(PhotoState.DELETE_PENDING)) if (p.uploadedAt == null && p.blobSha == null) db.removePhotoRow(p.id)
             _status.value = SyncStatus(problem = SyncProblem.NO_KEY)
             return SyncOutcome.Blocked
         }
         _status.value = _status.value.copy(running = true)
         try {
             runCatching { refreshBooks(force = false) }
-            val uploader = InboxUploader(client)
+            val key = settings.inboxRepo + "|" + (vault.load()?.hashCode() ?: 0)
+            val uploader = uploader?.takeIf { uploaderKey == key } ?: InboxUploader(client).also {
+                uploader = it
+                uploaderKey = key
+            }
             val deadline = System.currentTimeMillis() + TIME_BUDGET_MS
             while (System.currentTimeMillis() < deadline) {
                 val now = System.currentTimeMillis()
@@ -217,6 +226,7 @@ class SyncRunner(
         val now = System.currentTimeMillis()
         for (p in db.uploadedPhotosBefore(now - KEEP_LOCAL_FILE_MS)) {
             p.fileName?.let { store.photoFile(it).delete() }
+            store.thumbFile(p.id).delete()
             db.clearPhotoFile(p.id)
         }
         db.removeUploadedPhotoRowsBefore(now - KEEP_ROW_MS)

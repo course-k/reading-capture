@@ -156,6 +156,28 @@ class InboxUploaderTest {
     }
 
     @Test
+    fun `置いた直後に古い内容を返されても、消し忘れない`() {
+        // 実物の GitHub は、書いた直後の読み取りに少し前の内容を返すことがある
+        server.staleReadsAfterUpdate = 3
+        val u = uploader()
+        u.upload(listOf(UploadItem("p1", photoPath(1), { photoBytes(1) })), emptyList(), "置く")
+        val result = u.upload(emptyList(), listOf(DeleteItem("p1", photoPath(1))), "消す")
+        assertEquals(setOf("p1"), result.doneKeys)
+        assertFalse("置いたばかりの写真を、無いものと見て消し忘れた", server.files().containsKey(photoPath(1)))
+    }
+
+    @Test
+    fun `置いた直後に古い内容を返されても、続けて置ける`() {
+        server.staleReadsAfterUpdate = 3
+        val u = uploader()
+        u.upload(listOf(UploadItem("p1", photoPath(1), { photoBytes(1) })), emptyList(), "1 枚目")
+        val commits = server.commitCount()
+        u.upload(listOf(UploadItem("p2", photoPath(2), { photoBytes(2) })), emptyList(), "2 枚目")
+        assertEquals("余分なコミットを作らない", commits + 1, server.commitCount())
+        assertTrue(server.files().containsKey(photoPath(1)) && server.files().containsKey(photoPath(2)))
+    }
+
+    @Test
     fun `置いた言葉を書き換えられる`() {
         val path = InboxLayout.note("book-a", at)
         fun note(section: String) = NoteFile(bookId = "book-a", bookTitle = "本", section = section, spokenAt = at.toString(), text = "言葉")

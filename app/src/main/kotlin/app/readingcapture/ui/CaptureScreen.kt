@@ -107,6 +107,18 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
     val last = summary.last
     val lastWarnings = last?.warnings?.takeIf { it.any }
 
+    // 「消す」「撮り直す」を押すと、直前の 1 枚が 1 つ前の写真に入れ替わる。
+    // 続けて押した分でそれまで消してしまわないよう、押したあと少しのあいだは受け付けない
+    var lastRemoveAt by remember { mutableStateOf(0L) }
+    var removeLocked by remember { mutableStateOf(false) }
+    LaunchedEffect(lastRemoveAt) {
+        if (lastRemoveAt > 0) {
+            removeLocked = true
+            delay(1500)
+            removeLocked = false
+        }
+    }
+
     // 「撮りました」は少しのあいだだけ出す
     var justCaptured by remember { mutableStateOf(false) }
     LaunchedEffect(ui.capturedAtMs) {
@@ -165,7 +177,12 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                     ) {
                         Text(Texts.warning(lastWarnings), style = Type.small.copy(fontWeight = FontWeight.SemiBold), color = c.warn, modifier = Modifier.weight(1f))
                         Spacer(Modifier.width(8.dp))
-                        OutlineButton("撮り直す", onClick = { container.capture.retake(last) }, color = c.warn)
+                        OutlineButton("撮り直す", onClick = {
+                            if (!removeLocked) {
+                                lastRemoveAt = SystemClock.elapsedRealtime()
+                                container.capture.retake(last)
+                            }
+                        }, color = c.warn)
                     }
                 }
 
@@ -177,7 +194,10 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                         LastThumb(container, last, summary.count, warned = lastWarnings != null, onClick = onOpenPhotos)
                         if (last != null && last.kind == PhotoKind.CAMERA) {
-                            TextAction("消す", onClick = { container.capture.deleteLast(last) }, modifier = Modifier.padding(start = 6.dp))
+                            TextAction("消す", onClick = {
+                                lastRemoveAt = SystemClock.elapsedRealtime()
+                                container.capture.deleteLast(last)
+                            }, modifier = Modifier.padding(start = 6.dp), enabled = !removeLocked)
                         }
                     }
                     Shutter(enabled = ui.cameraReady, onClick = { container.capture.shutter() })

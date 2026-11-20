@@ -46,6 +46,7 @@ import app.readingcapture.core.inbox.InboxLayout
 import app.readingcapture.core.toc.BookEntry
 import app.readingcapture.core.toc.TocNavigator
 import app.readingcapture.core.toc.TocPosition
+import app.readingcapture.data.BookRepository
 import app.readingcapture.data.Note
 import app.readingcapture.data.NoteState
 import app.readingcapture.data.SectionChoice
@@ -85,7 +86,19 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
 
     // 入力欄の中身は、変わるたびに端末に書く（「残す」の前に閉じても残る）
     // 音声入力の文字は、キーボード経由でここに入る
-    val field = remember(book.id) { TextFieldState(container.settings.draft(book.id)) }
+    val field = remember(book.id) {
+        var draft = container.settings.draft(book.id)
+        if (draft.isEmpty() && book.id != BookRepository.UNSORTED_ID) {
+            // 本を選ぶ前に書いていた下書きがあれば、引き継ぐ
+            val orphan = container.settings.draft(BookRepository.UNSORTED_ID)
+            if (orphan.isNotEmpty()) {
+                draft = orphan
+                container.settings.setDraft(book.id, orphan)
+                container.settings.setDraft(BookRepository.UNSORTED_ID, "")
+            }
+        }
+        TextFieldState(draft)
+    }
     LaunchedEffect(book.id) {
         snapshotFlow { field.text.toString() }.collect { container.settings.setDraft(book.id, it) }
     }

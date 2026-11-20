@@ -61,6 +61,7 @@ class ShareActivity : Activity() {
             runOnUiThread {
                 val text = when {
                     saved == 0 -> "受け取れませんでした"
+                    saved < uris.size -> "${uris.size} 枚のうち $saved 枚を受け取りました。残りは受け取れませんでした"
                     bookTitle != null -> "$saved 枚を受け取りました（$bookTitle）"
                     else -> "$saved 枚を受け取りました"
                 }
