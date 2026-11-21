@@ -20,7 +20,7 @@ data class HapticChoice(
  * 振動の使い分け。画面を見なくても分かるよう、回数と長さで分ける。
  *
  * - 撮れた: 短いバイブ 1 回（0.04 秒）。設定の「撮れたときの振動」で選び直せる
- * - 切れ・ぶれ・暗い: 長めに 2 回（0.3 秒ずつ）
+ * - 切れ・ぶれ・暗い: 同じ短いバイブを 2 回
  *
  * 「消す」「残す」を押したときは振動しない（持ち主: 「別にいらないです」）。
  *
@@ -104,10 +104,11 @@ class Haptics(context: Context, private val settings: Settings) {
 
     /** 切れ・ぶれ・暗い。 */
     fun warning(): Long {
-        val timings = longArrayOf(0, 300, 180, 300)
+        // 撮れたときの 1 回と区別がつくよう、2 回。長さは撮れたときに合わせて短くする
+        val timings = longArrayOf(0, 40, 140, 40)
         val amplitudes = intArrayOf(0, 255, 0, 255)
         vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1), attributes)
-        return 780
+        return 320
     }
 
     companion object {

@@ -6,6 +6,7 @@ import app.readingcapture.core.detect.PageFingerprint
 import app.readingcapture.core.detect.PageGlimpse
 import app.readingcapture.core.detect.PageNumberPicker
 import app.readingcapture.core.detect.ReadLine
+import app.readingcapture.core.quality.Side
 import app.readingcapture.core.quality.TextBox
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
@@ -30,7 +31,14 @@ import java.util.concurrent.TimeUnit
 class TextLineDetector {
 
     /** 写真 1 枚を読んだ結果。 */
-    class Reading(val boxes: List<TextBox>, val fingerprint: PageFingerprint, val pageNumber: Int?, val numbers: List<NumberCandidate>)
+    class Reading(
+        val boxes: List<TextBox>,
+        val fingerprint: PageFingerprint,
+        val pageNumber: Int?,
+        /** ページの外側（綴じ目の反対側）。ページ番号が左右どちらかの隅にあれば、そちら。分からなければ null */
+        val outerSide: Side?,
+        val numbers: List<NumberCandidate>,
+    )
 
     /** ページ番号のあたりを読んだ結果と、読めた文字の数（記録用）。 */
     class GlimpseResult(val glimpse: PageGlimpse, val chars: Int, val numbers: List<NumberCandidate> = emptyList(), val lines: List<ReadLine> = emptyList())
@@ -43,7 +51,16 @@ class TextLineDetector {
     fun read(bitmap: Bitmap): Reading {
         val text = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)), 10, TimeUnit.SECONDS)
         val (lines, numbers) = layout(text)
-        return Reading(lines.map { it.box }, fingerprintOf(text), PageNumberPicker.pick(numbers, lines), numbers)
+        val number = PageNumberPicker.pickCandidate(numbers, lines)
+        val outer = number?.let {
+            val center = (it.box.left + it.box.right) / 2 / bitmap.width
+            when {
+                center < 0.4f -> Side.LEFT
+                center > 0.6f -> Side.RIGHT
+                else -> null
+            }
+        }
+        return Reading(lines.map { it.box }, fingerprintOf(text), number?.value, outer, numbers)
     }
 
     fun detect(bitmap: Bitmap): List<TextBox> = read(bitmap).boxes
@@ -161,7 +178,10 @@ class TextLineDetector {
         const val BOTTOM_BAND = 0.30f
         const val UPSCALE = 1f
 
-        /** 帯の中にこれだけ文字があれば、ページが写っているとみなす */
-        const val MIN_TEXT_CHARS = 8
+        /**
+         * 帯の中にこれだけ文字があれば、ページが写っているとみなす（番号が読めなかったとき、先に撮るかどうかの境目）。
+         * 実機で、ページをきちんと映したときの帯の文字は 93〜666。めくっている途中に撮ってしまったときは 9 だった。
+         */
+        const val MIN_TEXT_CHARS = 40
     }
 }

@@ -13,7 +13,7 @@ import java.time.format.DateTimeFormatter
  * ```
  * books.json                                         本の一覧（Claude が書く。アプリは読むだけ）
  * books/<本の id>/toc.json                           目次（Claude が書く。アプリは読むだけ）
- * books/<本の id>/photos/<年-月-日>/<時分秒-ミリ秒>-<種類>.<拡張子>   写真（アプリが置く）
+ * books/<本の id>/photos/<年-月-日>/<時分秒-ミリ秒>-<種類>[-p<ページ番号>].<拡張子>   写真（アプリが置く）
  * books/<本の id>/notes/<年-月-日>/<時分秒-ミリ秒>.json            話した言葉（アプリが置く）
  * ```
  */
@@ -30,9 +30,14 @@ object InboxLayout {
 
     fun toc(bookId: String): String = "books/${checked(bookId)}/toc.json"
 
-    fun photo(bookId: String, capturedAt: OffsetDateTime, kind: PhotoKind, extension: String = "jpg"): String {
+    /**
+     * @param pageNumber 写真から読めたページ番号。読めなかったときは null（名前に付けない）。
+     *   名前の先頭は時刻なので、番号の有無にかかわらず、名前の順が撮った順になる
+     */
+    fun photo(bookId: String, capturedAt: OffsetDateTime, kind: PhotoKind, extension: String = "jpg", pageNumber: Int? = null): String {
         require(extension.matches(Regex("[a-z0-9]{1,5}"))) { "拡張子が不正: $extension" }
-        return "books/${checked(bookId)}/photos/${DAY.format(capturedAt)}/${TIME.format(capturedAt)}-${kind.tag}.$extension"
+        val page = if (pageNumber != null && pageNumber in 1..9999) "-p$pageNumber" else ""
+        return "books/${checked(bookId)}/photos/${DAY.format(capturedAt)}/${TIME.format(capturedAt)}-${kind.tag}$page.$extension"
     }
 
     fun note(bookId: String, spokenAt: OffsetDateTime): String =

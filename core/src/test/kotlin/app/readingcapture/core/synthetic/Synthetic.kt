@@ -116,7 +116,8 @@ class SyntheticPage(
         }
         if (options.pageNumber) {
             g.font = textFont(charSize)
-            g.drawString((id + 30).toString(), PAGE_W / 2 - 10, PAGE_H - 50)
+            // 欄外に注のあるページは、注のある側（右）が外側。番号も外側の隅に刷る（実物の本の並び）
+            g.drawString((id + 30).toString(), if (options.marginNotes) PAGE_W - 150 else PAGE_W / 2 - 10, PAGE_H - 50)
         }
         g.dispose()
         return img

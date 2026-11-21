@@ -35,12 +35,16 @@ object PageNumberPicker {
      *   （ページの下が図や余白で、帯に番号しか入らなかったとき）、短い数字の行をページ番号とみなす。
      *   読み違えても、撮ったあとの写真全体から読み直した番号で直る
      */
-    fun pick(candidates: List<NumberCandidate>, lines: List<ReadLine>, edgeBandOnly: Boolean = false): Int? {
+    fun pick(candidates: List<NumberCandidate>, lines: List<ReadLine>, edgeBandOnly: Boolean = false): Int? =
+        pickCandidate(candidates, lines, edgeBandOnly)?.value
+
+    /** 選んだページ番号を、位置ごと返す（ページの外側がどちらかを知るのに使う）。 */
+    fun pickCandidate(candidates: List<NumberCandidate>, lines: List<ReadLine>, edgeBandOnly: Boolean = false): NumberCandidate? {
         val body = lines.filter { it.chars >= BODY_LINE_CHARS }
         if (body.isEmpty()) {
             if (!edgeBandOnly) return null
             // いちばん下にある短い数字
-            return candidates.filter { it.value in 1..999 && it.lineChars <= MAX_LINE_CHARS }.maxByOrNull { it.box.bottom }?.value
+            return candidates.filter { it.value in 1..999 && it.lineChars <= MAX_LINE_CHARS }.maxByOrNull { it.box.bottom }
         }
         val bodyLeft = body.minOf { it.box.left }
         val bodyRight = body.maxOf { it.box.right }
@@ -63,6 +67,6 @@ object PageNumberPicker {
                 best = c
             }
         }
-        return best?.value
+        return best
     }
 }

@@ -27,8 +27,9 @@ class EdgeCutOnDeviceTest {
         val source = context.assets.open(asset).use { BitmapFactory.decodeStream(it) }
         // アプリが点検に使う大きさ（長い辺 1536）に合わせる
         val bitmap = Bitmap.createScaledBitmap(source, 1152, 1536, true)
-        val boxes = detector.detect(bitmap)
-        return EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height).sides to boxes.size
+        // アプリと同じ道筋: 写真を読んで、ページ番号の位置から外側を決め、切れを見る
+        val reading = detector.read(bitmap)
+        return EdgeCutCheck.evaluate(reading.boxes, bitmap.width, bitmap.height, outerSide = reading.outerSide).sides to reading.boxes.size
     }
 
     @Test

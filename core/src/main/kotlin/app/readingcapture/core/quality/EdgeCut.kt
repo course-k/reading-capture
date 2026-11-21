@@ -47,14 +47,26 @@ data class EdgeCutResult(val sides: Set<Side>) {
  * （実機で、3 文字ぶんの写り込みを「左が切れている」と知らせてしまった）。そこで、左右の端については、
  *
  * - 端にかかった行が、本文の幅に近い長さなら、本文そのものが切れている
- * - 端にかかった行が、本文より小さな字で、ある程度の長さがあり、何行か続いていれば、欄外の注が切れている
- * - それ以外（本文と同じ大きさの字の、短い切れ端）は、となりのページの写り込みとして数えない
+ * - ページの外側（綴じ目の反対側）の端に、本文より小さな字の行が、ある程度の長さで何行か続いていれば、欄外の注が切れている
+ * - それ以外は、となりのページの写り込みとして数えない
  *
- * と判断する。上下の端は、本文の幅の中にある行（本文、柱、ページ番号）だけを見る。
+ * と判断する。外側がどちらかは、ページ番号の位置で分かる（外側の隅にある）。分からないときは、注の切れは知らせない。
+ * 綴じ目の側には、となりのページの小さな字（注や図の中の字）も写り込むので、字の大きさだけでは見分けられなかった
+ * （実機で、左が綴じ目のページ 2 枚に「左が切れている」と誤って知らせた）。迷うときは知らせない側に倒す（持ち主の判断）。
+ * 上下の端は、本文の幅の中にある行（本文、柱、ページ番号）だけを見る。
  */
 object EdgeCutCheck {
 
-    fun evaluate(lines: List<TextBox>, imageWidth: Int, imageHeight: Int, config: EdgeCutConfig = EdgeCutConfig()): EdgeCutResult {
+    /**
+     * @param outerSide ページの外側（綴じ目の反対側）。[Side.LEFT] か [Side.RIGHT]。分からなければ null
+     */
+    fun evaluate(
+        lines: List<TextBox>,
+        imageWidth: Int,
+        imageHeight: Int,
+        config: EdgeCutConfig = EdgeCutConfig(),
+        outerSide: Side? = null,
+    ): EdgeCutResult {
         var boxes = lines.filter { it.width >= 3f && it.height >= 3f }
         if (boxes.isEmpty()) return EdgeCutResult(emptySet())
 
@@ -82,15 +94,19 @@ object EdgeCutCheck {
         val bodyWidth = bodyRight - bodyLeft
         val bodyUnit = body.map { it.height }.sorted()[body.size / 2]
 
-        fun sideCut(touching: List<TextBox>): Boolean {
+        fun sideCut(touching: List<TextBox>, isOuter: Boolean): Boolean {
             if (touching.any { it.width >= bodyWidth * config.bodyCutRatio }) return true
+            // 欄外の注の切れは、外側の端でだけ見る
+            if (!isOuter) return false
             val notes = touching.count { it.height < bodyUnit * config.noteThicknessRatio && it.width >= it.height * config.noteMinLengthRatio }
             return notes >= config.noteMinLines
         }
 
         val found = mutableSetOf<Side>()
-        if (sideCut(boxes.filter { it.left <= along })) found += Side.LEFT
-        if (sideCut(boxes.filter { it.right >= w - along })) found += Side.RIGHT
+        // 縦書きの本は、外側の決め方が違うので、注の切れは見ない
+        val outer = if (vertical) null else outerSide
+        if (sideCut(boxes.filter { it.left <= along }, outer == Side.LEFT)) found += Side.LEFT
+        if (sideCut(boxes.filter { it.right >= w - along }, outer == Side.RIGHT)) found += Side.RIGHT
 
         // 上下: 本文の幅の中にある行だけ（となりのページの切れ端は数えない）
         fun inBody(b: TextBox): Boolean {

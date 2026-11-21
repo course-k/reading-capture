@@ -148,7 +148,12 @@ class PhotoProcessor(
         if (inspect !== upright) inspect.recycle()
         upright.recycle()
 
-        db.markPhotoReady(id, fileName, width, height, target.length(), warnings)
+        // ページ番号が読めていれば、取り込み箱での名前に付ける
+        val remotePath = lastPageNumber?.let { number ->
+            val at = java.time.OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(row.capturedAt), java.time.ZoneId.systemDefault())
+            app.readingcapture.core.inbox.InboxLayout.photo(row.bookId, at, row.kind, pageNumber = number)
+        }
+        db.markPhotoReady(id, fileName, width, height, target.length(), warnings, remotePath)
         raw.delete()
         // 仕上げのあいだに持ち主が消していたら、いま作ったファイルも片付ける
         if (db.photo(id)?.fileName != fileName) store.deleteAll(id, fileName)
@@ -191,7 +196,7 @@ class PhotoProcessor(
                     val bitmap = if (scale < 1f) Bitmap.createScaledBitmap(source, (source.width * scale).roundToInt(), (source.height * scale).roundToInt(), true) else source
                     val reading = lines.read(bitmap)
                     val boxes = reading.boxes
-                    logBoxes(p.id, boxes, bitmap.width, bitmap.height, EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height))
+                    logBoxes(p.id, boxes, bitmap.width, bitmap.height, EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height, outerSide = reading.outerSide))
                     // 数字だけの短い語（ページ番号の候補）。値、位置、その行の文字数。選ばれたページ番号
                     diag.log(
                         "numbers", "id" to p.id, "w" to bitmap.width, "h" to bitmap.height, "at" to p.capturedAt, "page" to reading.pageNumber,
@@ -218,7 +223,7 @@ class PhotoProcessor(
         lastFingerprint = reading.fingerprint
         lastPageNumber = reading.pageNumber
         val boxes = reading.boxes
-        val result = EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height)
+        val result = EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height, outerSide = reading.outerSide)
         // 知らせを出すときは、行の枠の並び（数値だけ）を残しておく。外れていたときに調べられるように
         if (result.isCut) lastBoxes = Triple(boxes, bitmap.width, bitmap.height)
         result to boxes.size

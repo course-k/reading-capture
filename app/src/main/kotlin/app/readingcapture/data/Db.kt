@@ -119,7 +119,7 @@ class Db(context: Context, name: String? = "capture.db") : SQLiteOpenHelper(cont
     )
 
     /** 仕上げが済んだ。 */
-    fun markPhotoReady(id: String, fileName: String, width: Int, height: Int, bytes: Long, warnings: PhotoWarnings) {
+    fun markPhotoReady(id: String, fileName: String, width: Int, height: Int, bytes: Long, warnings: PhotoWarnings, remotePath: String? = null) {
         // 仕上げのあいだに持ち主が消していたら、消した状態のままにする
         writableDatabase.update("photo", ContentValues().apply {
             put("state", PhotoState.READY.name)
@@ -128,6 +128,8 @@ class Db(context: Context, name: String? = "capture.db") : SQLiteOpenHelper(cont
             put("height", height)
             put("bytes", bytes)
             put("warnings", warnings.toBits())
+            // ページ番号が読めたら、取り込み箱での名前に付ける
+            if (remotePath != null) put("remote_path", remotePath)
         }, "id = ? AND state = ?", arrayOf(id, PhotoState.RAW.name))
         changed()
     }

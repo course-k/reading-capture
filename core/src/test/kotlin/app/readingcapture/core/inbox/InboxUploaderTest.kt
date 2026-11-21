@@ -46,6 +46,9 @@ class InboxUploaderTest {
         assertEquals(note, NoteFile.decode(files.getValue("books/book-a/notes/2026-11-20/213455-123.json")))
         assertTrue("もとからあるファイルを消していない", files.containsKey("README.md"))
         assertEquals("books/book-a/photos/2026-11-20/213456-123-cam.jpg", photoPath(1))
+        // ページ番号が読めたときは、名前に付ける
+        assertEquals("books/book-a/photos/2026-11-20/213455-123-cam-p47.jpg", InboxLayout.photo("book-a", at, PhotoKind.CAMERA, pageNumber = 47))
+        assertEquals("books/book-a/photos/2026-11-20/213455-123-share.png", InboxLayout.photo("book-a", at, PhotoKind.SHARED, "png"))
     }
 
     @Test
