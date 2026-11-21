@@ -9,6 +9,7 @@ import app.readingcapture.core.frame.LumaImage
 import app.readingcapture.core.quality.EdgeCutCheck
 import app.readingcapture.core.quality.EdgeCutResult
 import app.readingcapture.core.quality.PhotoMeasure
+import app.readingcapture.core.quality.MarginCheck
 import app.readingcapture.core.quality.PhotoMeasurer
 import app.readingcapture.core.quality.PhotoWarnings
 import app.readingcapture.core.quality.QualityJudge
@@ -43,6 +44,7 @@ class PhotoProcessor(
     private val judge = QualityJudge()
     private var lastBoxes: Triple<List<app.readingcapture.core.quality.TextBox>, Int, Int>? = null
     private var lastPageNumber: Int? = null
+    private var lastOuterSide: app.readingcapture.core.quality.Side? = null
 
     /** 点検で知らせることが見つかったときに呼ぶ（仕上げのスレッドから）。 */
     var onWarning: ((photoId: String, warnings: PhotoWarnings) -> Unit)? = null
@@ -128,16 +130,20 @@ class PhotoProcessor(
             Bitmap.createScaledBitmap(upright, (upright.width * inspectScale).roundToInt(), (upright.height * inspectScale).roundToInt(), true)
         else upright
 
-        val measure = measure(inspect)
+        val luma = lumaOf(inspect)
+        val measure = PhotoMeasurer.measure(luma.downsampleToLongSide(PhotoMeasurer.MEASURE_LONG_SIDE))
         lastBoxes = null
         lastPageNumber = null
-        val (cut, lineCount) = detectCut(inspect)
+        lastOuterSide = null
+        // 文字認識は、ページ番号と、ページの外側（番号のある側）を知るために使う。行の枠での見切れの判定は、比べるために記録だけ残す
+        val (cutByBoxes, lineCount) = detectCut(inspect)
         val readNumber = lastPageNumber
         val pageNumber = hintNumber ?: readNumber
-        lastBoxes?.let { (b, w, h) -> logBoxes(id, b, w, h, cut) }
-        // 見切れは警告に含めない（記録だけ残す）。手持ちでは行が傾いて写り、行の枠が縦に伸びて端にかかるので、
-        // 実機で 13 枚中 6 枚に出て、確かめられたものは誤りだった（下が見切れと出た写真で、下のページ番号は読めていた）
-        val warnings = judge.judge(measure, EdgeCutResult(emptySet()), moved)
+        // 見切れは、文字が写真の端まで届いているかで見る（升目ごとの細かさ。行の傾きの影響を受けない）
+        val touches = MarginCheck.touches(MarginCheck.textCells(luma))
+        val cut = MarginCheck.evaluate(luma, lastOuterSide)
+        lastBoxes?.let { (b, w, h) -> logBoxes(id, b, w, h, cutByBoxes) }
+        val warnings = judge.judge(measure, cut, moved)
         onInspected?.invoke(id, readNumber, !warnings.blurred)
 
         // 仕上げたものを保存する。書き終えてから名前を付け替えるので、途中で落ちても半端なファイルは残らない
@@ -171,13 +177,15 @@ class PhotoProcessor(
             "photo", "id" to id, "w" to width, "h" to height, "bytes" to target.length(), "rawBytes" to row.bytes,
             "sharp" to measure.sharpness, "sharpX" to measure.sharpnessX, "sharpY" to measure.sharpnessY, "paper" to measure.paperLuma,
             "lines" to lineCount, "page" to pageNumber, "readPage" to readNumber, "cut" to cut.sides.joinToString(",") { it.name }, "moved" to moved,
+            "cutByBoxes" to cutByBoxes.sides.joinToString(",") { it.name }, "outer" to lastOuterSide?.name,
+            "touch" to touches.entries.joinToString(",") { "${it.key.name[0]}${it.value.count}/${it.value.bodyCount}" },
             "blur" to warnings.blurred, "dark" to warnings.dark, "ms" to System.currentTimeMillis() - started,
         )
         // 持ち主がそのあいだに消していなければ知らせる
         if (warnings.any && db.photo(id)?.state == PhotoState.READY) onWarning?.invoke(id, warnings)
     }
 
-    private fun measure(bitmap: Bitmap): PhotoMeasure {
+    private fun lumaOf(bitmap: Bitmap): LumaImage {
         val w = bitmap.width
         val h = bitmap.height
         val pixels = IntArray(w * h)
@@ -187,7 +195,7 @@ class PhotoProcessor(
             val p = pixels[i]
             luma[i] = ((((p shr 16) and 0xFF) * 77 + ((p shr 8) and 0xFF) * 150 + (p and 0xFF) * 29) shr 8).toByte()
         }
-        return PhotoMeasurer.measure(LumaImage(w, h, luma).downsampleToLongSide(PhotoMeasurer.MEASURE_LONG_SIDE))
+        return LumaImage(w, h, luma)
     }
 
     /**
@@ -230,6 +238,7 @@ class PhotoProcessor(
     private fun detectCut(bitmap: Bitmap): Pair<EdgeCutResult, Int> = try {
         val reading = lines.read(bitmap)
         lastPageNumber = reading.pageNumber
+        lastOuterSide = reading.outerSide
         val boxes = reading.boxes
         val result = EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height, outerSide = reading.outerSide)
         // 知らせを出すときは、行の枠の並び（数値だけ）を残しておく。外れていたときに調べられるように
