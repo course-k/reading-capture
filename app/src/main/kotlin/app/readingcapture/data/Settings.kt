@@ -58,7 +58,7 @@ class Settings(context: Context) {
 
     /** 撮れたときの振動（[app.readingcapture.capture.Haptics] の選択肢の名前） */
     var capturedHaptic: String
-        get() = prefs.getString(KEY_HAPTIC, null) ?: "len:200"
+        get() = prefs.getString(KEY_HAPTIC, null) ?: "len:40"
         set(value) = prefs.edit().putString(KEY_HAPTIC, value).apply()
 
     var showNumbers: Boolean

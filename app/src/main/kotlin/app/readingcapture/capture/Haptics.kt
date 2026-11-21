@@ -19,12 +19,13 @@ data class HapticChoice(
 /**
  * 振動の使い分け。画面を見なくても分かるよう、回数と長さで分ける。
  *
- * - 撮れた: 1 回。どの振動にするかは、設定の「振動を試す」で持ち主が選ぶ
+ * - 撮れた: 短いバイブ 1 回（0.04 秒）。設定の「撮れたときの振動」で選び直せる
  * - 切れ・ぶれ・暗い: 長めに 2 回（0.3 秒ずつ）
- * - 消した・残した: ごく短く 1 回
+ * - 消した・残した: さらに短く 1 回（0.02 秒）
  *
  * 最初は、キーを押したときと同じ種類の軽い振動にしていたが、持ち主が思っていた「バイブ」ではなかった。
- * 次に 0.2 秒のバイブにしたが、長かった（実際には 0.29 秒鳴っていた）。触って選べるようにしてある（2026-11-21）。
+ * 次に 0.2 秒のバイブにしたが、長かった（実際には 0.29 秒鳴っていた）。
+ * 触って選べるようにし、持ち主が 0.04 秒を選んだ（2026-11-21）。これを既定にしてある。
  */
 class Haptics(context: Context, private val settings: Settings) {
 
@@ -110,11 +111,12 @@ class Haptics(context: Context, private val settings: Settings) {
 
     /** 消した・残した・節を変えた。 */
     fun tick(): Long {
-        vibrator.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE), attributes)
-        return 40
+        // 撮れたときの振動（0.04 秒）と紛れないよう、さらに短くする
+        vibrator.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE), attributes)
+        return 20
     }
 
     companion object {
-        const val DEFAULT = "len:200"
+        const val DEFAULT = "len:40"
     }
 }
