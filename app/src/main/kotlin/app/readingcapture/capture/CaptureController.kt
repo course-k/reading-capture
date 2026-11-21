@@ -22,9 +22,9 @@ import app.readingcapture.core.detect.CaptureReason
 import app.readingcapture.core.detect.CaptureRequest
 import app.readingcapture.core.detect.EngineStatus
 import app.readingcapture.core.detect.FrameResult
-import app.readingcapture.core.detect.PageFingerprint
 import app.readingcapture.core.detect.PageGlimpse
 import app.readingcapture.core.detect.PageNeed
+import app.readingcapture.core.detect.TextBlockFinder
 import app.readingcapture.core.frame.LumaImage
 import app.readingcapture.core.inbox.InboxLayout
 import app.readingcapture.core.inbox.PhotoKind
@@ -85,7 +85,7 @@ class CaptureController(
     private val engine = CaptureEngine()
     private val analysisExecutor = Executors.newSingleThreadScheduledExecutor { Thread(it, "capture-analysis") }
     private var warningDeferred = false
-    // 写真の id と、撮る合図の番号の対応（写真から読んだ指紋を、どのページのものか結び付ける）
+    // 写真の id と、撮る合図の番号の対応（写真の点検の結果を、どの撮影のものか結び付ける）
     private val requestIds = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val ioExecutor = Executors.newSingleThreadExecutor { Thread(it, "capture-io") }
     private val mainExecutor = ContextCompat.getMainExecutor(context)
@@ -123,8 +123,11 @@ class CaptureController(
     private var lastPublishedProgress = -1f
     private var lastNumbersAt = 0L
     private var bound = false
+    // 撮る合図を出したときに、映像から読めていたページ番号（判定用のスレッドだけが触る）
+    private var pendingHintNumber: Int? = null
+    private var lastCaptureFinishedAt = 0L
 
-    private val referenceFile = java.io.File(context.filesDir, "capture/pages-v2.bin")
+    private val referenceFile = java.io.File(context.filesDir, "capture/pages-v3.bin")
 
     init {
         // カメラが保存したのに台帳に載る前に落ちた写真を拾う
@@ -146,20 +149,13 @@ class CaptureController(
         }
         // アプリを開き直しても同じページを二度撮りしないよう、最後に撮ったページを思い出す（30 分以内のものだけ）
         analysisExecutor.execute { restoreReference() }
-        // 写真からページ全体の文字と番号が読めたら、前に撮ったページと同じでないかを見る。同じなら、その 1 枚は捨てる
-        processor.onPageRead = { photoId, fingerprint, pageNumber ->
+        // 写真の点検が済んだら、読めたページ番号と、読める写真だったかをエンジンに伝える
+        processor.onInspected = { photoId, pageNumber, usable ->
             analysisExecutor.execute {
                 val requestId = requestIds.remove(photoId)
                 if (requestId != null) {
-                    val duplicate = engine.onPhotoRead(requestId, fingerprint, pageNumber)
-                    if (duplicate) {
-                        db.photo(photoId)?.let { photo ->
-                            val fileName = db.deletePhoto(photo.id)
-                            store.deleteAll(photo.id, fileName ?: photo.fileName)
-                            sync.kick()
-                        }
-                    }
-                    diag.log("photo_read", "id" to photoId, "page" to pageNumber, "hashes" to fingerprint?.hashes?.size, "duplicate" to duplicate)
+                    engine.onPhotoInspected(requestId, pageNumber, usable)
+                    diag.log("photo_read", "id" to photoId, "page" to pageNumber, "usable" to usable)
                     saveReference()
                 }
             }
@@ -307,38 +303,33 @@ class CaptureController(
             if (motion != null) gyroSinceFrame = 0f
             probe(frame, now)
             var result = engine.onFrame(frame, now, motion)
+            logAroundCapture(result, now)
             var rounds = 0
             while (result.need != PageNeed.NONE && rounds++ < 3) {
                 val rotation = proxy.imageInfo.rotationDegrees
                 val started = SystemClock.elapsedRealtime()
-                if (result.need == PageNeed.GLIMPSE) {
-                    // 止まった。ページ番号のあたりだけを読む
-                    val read = runCatching { pageReader.glimpse(scratch, w, h, rowStride, rotation) }
-                        .onFailure { diag.log("read_error", "error" to it.toString()) }
-                        .getOrDefault(TextLineDetector.GlimpseResult(PageGlimpse(null, hasText = false), 0))
-                    val after = SystemClock.elapsedRealtime()
-                    result = engine.onPageGlimpsed(read.glimpse, after)
-                    val m = result.metrics
-                    diag.log(
-                        "glimpse", "ms" to after - started, "page" to read.glimpse.pageNumber, "text" to read.glimpse.hasText, "chars" to read.chars,
-                        "status" to result.status.name, "request" to result.request?.reason?.name, "next" to result.need.name,
-                        "cell" to m.cellFraction, "cmax" to m.cellMax, "gyro" to m.deviceMotion, "sharp" to m.sharpness,
-                    )
-                } else {
-                    // 番号は「もう撮った番号」だった。読み違いでないか、まん中の文字で確かめる
-                    val fingerprint = runCatching { pageReader.fingerprintOfCenter(scratch, w, h, rowStride, rotation) }
-                        .onFailure { diag.log("read_error", "error" to it.toString()) }
-                        .getOrDefault(PageFingerprint.of(emptyList()))
-                    val after = SystemClock.elapsedRealtime()
-                    result = engine.onPageObserved(fingerprint, after)
-                    diag.log(
-                        "check", "ms" to after - started, "chars" to fingerprint.charCount, "hashes" to fingerprint.hashes.size,
-                        "sim" to result.metrics.similarity, "status" to result.status.name, "request" to result.request?.reason?.name,
-                    )
-                }
+                // 止まった。ページ番号のあたりだけを読む。読んでいるあいだのスマホの動きも見ておく
+                if (gyroSinceFrame >= 0f) gyroSinceFrame = 0f
+                val read = runCatching { pageReader.glimpse(scratch, w, h, rowStride, rotation) }
+                    .onFailure { diag.log("read_error", "error" to it.toString()) }
+                    .getOrDefault(TextLineDetector.GlimpseResult(PageGlimpse(null, hasText = false), 0))
+                val after = SystemClock.elapsedRealtime()
+                val readMotion = gyroSinceFrame.takeIf { it >= 0f }
+                result = engine.onPageGlimpsed(read.glimpse, after, readMotion)
+                val m = result.metrics
+                // 文字のかたまりの範囲（記録するだけ。向きは映像の面のまま）
+                val block = TextBlockFinder.find(frame)
+                diag.log(
+                    "glimpse", "ms" to after - started, "page" to read.glimpse.pageNumber, "text" to read.glimpse.hasText, "chars" to read.chars,
+                    "status" to result.status.name, "request" to result.request?.reason?.name, "next" to result.need.name,
+                    "cell" to m.cellFraction, "cmax" to m.cellMax, "gyro" to m.deviceMotion, "readGyro" to readMotion, "sharp" to m.sharpness,
+                    "rot" to rotation, "block" to block?.let { "%.3f,%.3f,%.3f,%.3f".format(it.left, it.top, it.right, it.bottom) },
+                    "blockText" to block?.textFraction, "e50" to block?.energy50, "e90" to block?.energy90,
+                )
                 // 読んでいるあいだの動きは、次のコマとの比較に持ち込まない（読み終えてからの動きだけを見る）
                 if (gyroSinceFrame >= 0f) gyroSinceFrame = 0f
             }
+            result.request?.let { pendingHintNumber = result.pageNumber }
             result.request?.let { takePicture(it) }
             publish(result, now)
         } catch (e: Exception) {
@@ -346,6 +337,19 @@ class CaptureController(
         } finally {
             proxy.close()
         }
+    }
+
+    /**
+     * 撮っている最中と、撮り終えてから 1.2 秒のあいだは、コマごとの数値を記録する。
+     * 写真を撮る処理で判定用の映像がどのくらい乱れるか、撮った直後に何が「動いた」に見えるかを確かめるため。
+     */
+    private fun logAroundCapture(result: FrameResult, now: Long) {
+        if (!engine.isCapturing && now - lastCaptureFinishedAt > 1200) return
+        val m = result.metrics
+        diag.log(
+            "post", "dt" to now - lastCaptureFinishedAt, "capturing" to engine.isCapturing, "st" to result.status.name,
+            "c4" to m.cellFraction, "cmax" to m.cellMax, "gyro" to m.deviceMotion,
+        )
     }
 
     /**
@@ -368,6 +372,7 @@ class CaptureController(
                 "a2" to coarseA.over[0], "a4" to coarseA.over[1], "a6" to coarseA.over[2], "a10" to coarseA.over[3], "a16" to coarseA.over[4], "amax" to coarseA.max,
                 "sharp" to app.readingcapture.core.detect.Sharpness.gradientEnergy(frame),
                 "gyro" to gyroMax, "accel" to accelMax,
+                "block" to TextBlockFinder.find(frame)?.let { "%.3f,%.3f,%.3f,%.3f".format(it.left, it.top, it.right, it.bottom) },
             )
             gyroMax = 0f
             accelMax = 0f
@@ -393,8 +398,7 @@ class CaptureController(
     }
 
     /**
-     * 最近撮ったページの覚え（ページ番号と、指紋の数値。文字ではない）を書いておく。
-     * アプリを開き直しても、同じページを二度撮りしないため。
+     * 最近撮ったページ番号を書いておく。アプリを開き直しても、同じページを二度撮りしないため。
      */
     private fun saveReference() {
         val pages = engine.rememberedPages()
@@ -403,11 +407,7 @@ class CaptureController(
             java.io.DataOutputStream(referenceFile.outputStream().buffered()).use { out ->
                 out.writeLong(System.currentTimeMillis())
                 out.writeInt(pages.size)
-                for ((number, hashes) in pages) {
-                    out.writeInt(number)
-                    out.writeInt(hashes.size)
-                    for (v in hashes) out.writeInt(v)
-                }
+                for (number in pages) out.writeInt(number)
             }
         }
     }
@@ -420,14 +420,7 @@ class CaptureController(
                 if (System.currentTimeMillis() - savedAt > REFERENCE_MAX_AGE_MS) return
                 val count = input.readInt()
                 if (count !in 0..64) return
-                val pages = ArrayList<Pair<Int, IntArray>>()
-                repeat(count) {
-                    val number = input.readInt()
-                    val n = input.readInt()
-                    if (n !in 0..20000) return
-                    pages += number to IntArray(n) { input.readInt() }
-                }
-                engine.restorePages(pages)
+                engine.restorePages(List(count) { input.readInt() })
             }
         }
     }
@@ -449,6 +442,8 @@ class CaptureController(
         val bookId = settings.currentBookId.value ?: BookRepository.UNSORTED_ID
         val raw = store.rawFile(id)
         requestIds[id] = request.id
+        val hintNumber = pendingHintNumber.takeIf { request.reason != CaptureReason.MANUAL }
+        pendingHintNumber = null
         val started = SystemClock.elapsedRealtime()
         capture.takePicture(
             ImageCapture.OutputFileOptions.Builder(raw).build(),
@@ -469,6 +464,7 @@ class CaptureController(
                     analysisExecutor.execute {
                         val now = SystemClock.elapsedRealtime()
                         val outcome = engine.onCaptureFinished(request.id, now, saved = true)
+                        lastCaptureFinishedAt = now
                         saveReference()
                         // 振動は写真を撮り終えてから（撮っている最中に揺らさない）
                         val ms = haptics.captured()
@@ -478,7 +474,7 @@ class CaptureController(
                             analysisExecutor.schedule({ if (engine.isCapturing) warningDeferred = true else vibrateWarning() }, ms + 200, java.util.concurrent.TimeUnit.MILLISECONDS)
                         }
                         diag.log("captured", "id" to id, "reason" to request.reason.name, "latencyMs" to latency, "moved" to outcome.movedDuringCapture, "rawBytes" to raw.length())
-                        processor.enqueue(id, outcome.movedDuringCapture)
+                        processor.enqueue(id, outcome.movedDuringCapture, hintNumber)
                     }
                 }
 

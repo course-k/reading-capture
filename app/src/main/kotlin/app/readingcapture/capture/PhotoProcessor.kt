@@ -42,7 +42,6 @@ class PhotoProcessor(
     private val lines = TextLineDetector()
     private val judge = QualityJudge()
     private var lastBoxes: Triple<List<app.readingcapture.core.quality.TextBox>, Int, Int>? = null
-    private var lastFingerprint: app.readingcapture.core.detect.PageFingerprint? = null
     private var lastPageNumber: Int? = null
 
     /** 点検で知らせることが見つかったときに呼ぶ（仕上げのスレッドから）。 */
@@ -51,16 +50,23 @@ class PhotoProcessor(
     /** 台帳に載っていない写真を台帳に載せる。載せられたら true を返す。 */
     var adoptOrphan: ((photoId: String) -> Boolean?)? = null
 
-    /** 写真からページ全体の指紋とページ番号が読めたときに呼ぶ（仕上げのスレッドから）。 */
-    var onPageRead: ((photoId: String, fingerprint: app.readingcapture.core.detect.PageFingerprint?, pageNumber: Int?) -> Unit)? = null
+    /**
+     * 写真の点検が済んだときに呼ぶ（仕上げのスレッドから）。
+     * pageNumber は写真から読めたページ番号、usable は読める写真か（ぶれていれば false）。
+     */
+    var onInspected: ((photoId: String, pageNumber: Int?, usable: Boolean) -> Unit)? = null
 
     /** 1 枚の仕上げが済むたびに呼ぶ。 */
     var onProcessed: (() -> Unit)? = null
 
-    fun enqueue(photoId: String, movedDuringCapture: Boolean) {
+    /**
+     * @param hintNumber 撮る前に映像から読めていたページ番号。読めていれば、写真から読んだ番号より優先する
+     *        （実機で、撮る前の読み取りは合っていて、写真からの読み取りが 44→4、47→41 のように違っていた）
+     */
+    fun enqueue(photoId: String, movedDuringCapture: Boolean, hintNumber: Int? = null) {
         executor.execute {
             try {
-                process(photoId, movedDuringCapture)
+                process(photoId, movedDuringCapture, hintNumber)
             } catch (t: Throwable) {
                 // 仕上げに失敗しても、撮ったものは失わない。カメラが保存したままの形で上げる
                 diag.log("process_error", "id" to photoId, "error" to t.toString())
@@ -85,7 +91,7 @@ class PhotoProcessor(
         executor.execute { judge.reset() }
     }
 
-    private fun process(id: String, moved: Boolean) {
+    private fun process(id: String, moved: Boolean, hintNumber: Int?) {
         val started = System.currentTimeMillis()
         val row = db.photo(id) ?: run {
             store.deleteAll(id, null)
@@ -124,12 +130,13 @@ class PhotoProcessor(
 
         val measure = measure(inspect)
         lastBoxes = null
-        lastFingerprint = null
         lastPageNumber = null
         val (cut, lineCount) = detectCut(inspect)
-        onPageRead?.invoke(id, lastFingerprint, lastPageNumber)
+        val readNumber = lastPageNumber
+        val pageNumber = hintNumber ?: readNumber
         lastBoxes?.let { (b, w, h) -> logBoxes(id, b, w, h, cut) }
         val warnings = judge.judge(measure, cut, moved)
+        onInspected?.invoke(id, readNumber, !warnings.blurred)
 
         // 仕上げたものを保存する。書き終えてから名前を付け替えるので、途中で落ちても半端なファイルは残らない
         val fileName = "$id.jpg"
@@ -149,7 +156,7 @@ class PhotoProcessor(
         upright.recycle()
 
         // ページ番号が読めていれば、取り込み箱での名前に付ける
-        val remotePath = lastPageNumber?.let { number ->
+        val remotePath = pageNumber?.let { number ->
             val at = java.time.OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(row.capturedAt), java.time.ZoneId.systemDefault())
             app.readingcapture.core.inbox.InboxLayout.photo(row.bookId, at, row.kind, pageNumber = number)
         }
@@ -161,7 +168,7 @@ class PhotoProcessor(
         diag.log(
             "photo", "id" to id, "w" to width, "h" to height, "bytes" to target.length(), "rawBytes" to row.bytes,
             "sharp" to measure.sharpness, "sharpX" to measure.sharpnessX, "sharpY" to measure.sharpnessY, "paper" to measure.paperLuma,
-            "lines" to lineCount, "page" to lastPageNumber, "cut" to cut.sides.joinToString(",") { it.name }, "moved" to moved,
+            "lines" to lineCount, "page" to pageNumber, "readPage" to readNumber, "cut" to cut.sides.joinToString(",") { it.name }, "moved" to moved,
             "blur" to warnings.blurred, "dark" to warnings.dark, "ms" to System.currentTimeMillis() - started,
         )
         // 持ち主がそのあいだに消していなければ知らせる
@@ -220,7 +227,6 @@ class PhotoProcessor(
     /** 文字の行の枠だけを取り出して、端にかかっているかを見る。 */
     private fun detectCut(bitmap: Bitmap): Pair<EdgeCutResult, Int> = try {
         val reading = lines.read(bitmap)
-        lastFingerprint = reading.fingerprint
         lastPageNumber = reading.pageNumber
         val boxes = reading.boxes
         val result = EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height, outerSide = reading.outerSide)

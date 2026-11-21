@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.readingcapture.AppContainer
 import app.readingcapture.core.inbox.PhotoKind
+import app.readingcapture.core.detect.EngineStatus
 import app.readingcapture.core.quality.Side
 import app.readingcapture.data.Photo
 import app.readingcapture.data.PhotoState
@@ -94,7 +95,19 @@ fun CaptureScreen(container: AppContainer, bookId: String, onOpenPhotos: () -> U
         }
     }
     val last = summary.last
-    val lastWarnings = last?.warnings?.takeIf { it.any }
+    // 警告を出すのは、次の撮影まで・ページが映像から外れるまで・8 秒たつまで（本の外に向けても前の写真の警告が残っていた）
+    var warningDismissedFor by remember { mutableStateOf<String?>(null) }
+    val lastHasWarning = last?.warnings?.any == true
+    LaunchedEffect(last?.id, lastHasWarning) {
+        if (last != null && lastHasWarning) {
+            delay(8000)
+            warningDismissedFor = last.id
+        }
+    }
+    LaunchedEffect(ui.status, last?.id) {
+        if (last != null && ui.status == EngineStatus.NOT_A_PAGE) warningDismissedFor = last.id
+    }
+    val lastWarnings = last?.warnings?.takeIf { it.any && warningDismissedFor != last.id }
 
     // 「消す」「撮り直す」を押すと、直前の 1 枚が 1 つ前の写真に入れ替わる。
     // 続けて押した分でそれまで消してしまわないよう、押したあと少しのあいだは受け付けない

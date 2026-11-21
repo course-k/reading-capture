@@ -76,7 +76,7 @@ class PageNumberOnDeviceTest {
     @Test
     fun 帯は_ページ全体より読む文字が少ない() {
         val upright = view("page_ok.png")
-        val whole = detector.read(upright).fingerprint.charCount
+        val whole = detector.read(upright).chars
         val band = detector.glimpse(sensorPlane(upright), 1280, 960, 1280, 90).chars
         assertTrue("帯 $band 文字、全体 $whole 文字", band < whole / 2)
     }
@@ -95,16 +95,5 @@ class PageNumberOnDeviceTest {
         val result = detector.glimpse(sensorPlane(blank), 1280, 960, 1280, 90)
         assertNull(result.glimpse.pageNumber)
         assertFalse(result.glimpse.hasText)
-    }
-
-    @Test
-    fun まん中だけ読んだ指紋は_写真全体の指紋と重なる() {
-        val upright = view("page_ok.png")
-        val whole = detector.read(upright).fingerprint
-        val center = detector.fingerprintOfCenter(sensorPlane(view("page_ok.png", rotate = 3f, dx = 15f)), 1280, 960, 1280, 90)
-        val other = detector.read(view("page_notes_ok.png")).fingerprint
-        val same = app.readingcapture.core.detect.PageFingerprint.similarity(whole, center)
-        val different = app.readingcapture.core.detect.PageFingerprint.similarity(other, center)
-        assertTrue("同じページ $same、違うページ $different", same >= 0.3f && different < 0.1f)
     }
 }

@@ -34,9 +34,6 @@ enum class PageNeed {
 
     /** ページ番号のあたりだけを読んでほしい（[CaptureEngine.onPageGlimpsed] で答える） */
     GLIMPSE,
-
-    /** まん中の文字を読んで指紋を作ってほしい（[CaptureEngine.onPageObserved] で答える） */
-    FINGERPRINT,
 }
 
 /**
@@ -71,8 +68,6 @@ data class FrameMetrics(
     val sharpness: Float,
     /** スマホ自体の動き（回る速さ）。分からなければ null */
     val deviceMotion: Float? = null,
-    /** 覚えているページとの重なり（文字で確かめたコマだけ） */
-    val similarity: Float? = null,
 )
 
 /** 撮り終えたときにエンジンが返す。 */
@@ -133,10 +128,16 @@ data class EngineConfig(
     /** ピントが落ち着かなくても、ここまで待ったら進める */
     val focusTimeoutMs: Long = 600,
     /**
-     * 同じページとみなす、文字の指紋の重なり。
-     * 実機（Pixel 6a、本物の本、手持ち）で実測した値: 同じページ 0.88〜0.99、違うページ 0.05〜0.21。
+     * ページ番号を読んでいるあいだ（0.15〜0.9 秒。そのあいだコマは届かない）のスマホの動きが、これを超えたら、
+     * 読んだ結果を捨てて、止まるのを待ち直す。実機で、読んでいるあいだに動き出していたのに撮り、ぶれた写真になった。
      */
-    val sameSimilarity: Float = 0.3f,
+    val readMotionLimit: Float = 0.2f,
+    /**
+     * 撮っている最中と、撮り終えてからこの時間は、映像の変化を「動いた」に数えない（スマホの動きだけで見る）。
+     * 実機で、写真を撮るときに判定用の映像が乱れ（変わった区画の割合の中央値が 0.34）、スマホは止まっているのに
+     * 「別のページへ移した」と数えて、同じ場所でもう一度撮っていた。
+     */
+    val postCaptureQuietMs: Long = 600,
     /** 覚えておくページの数。行きつ戻りつ読んでも撮り直さないため */
     val rememberedPages: Int = 12,
     /** 「ページらしくない」と判断したあとの、見直しの間隔 */
@@ -159,9 +160,12 @@ data class EngineConfig(
  * 2. 止まったら、ページ番号のあたりだけを読んでもらう（文字認識。呼び出し側が行う）。
  *    読むのは一部なので速い（ページ全体を読むと、実機で 1 回 0.5〜1.5 秒かかった）
  * 3. 番号が読めて、もう撮った番号なら、撮らない。まだの番号なら、すぐ撮る
- * 4. 番号が読めなければ、先に撮る。同じページかどうかは、撮ったあとの写真の文字で見分け、同じなら捨てる
- *    （[onPhotoRead]）
+ * 4. 番号が読めなければ、文字が写っていれば撮る
  * 5. 撮ったあとは、大きな動き（めくる、別のページへ移す）があるまで撮らない
+ *
+ * 同じページかどうかは、ページ番号だけで見分ける。文字の中身は比べない（実機で、隣のページが写り込んだ写真どうしを
+ * 「同じページ」と見なして、撮れていた右ページを捨てていた）。番号の読めないページを二度撮ることはあるが、
+ * 撮れた写真を捨てるよりよい。
  *
  * カメラにも時計にも文字認識にも依存しない。時刻・動き・読んだ結果は外から受け取るので、
  * 合成した映像を流して同じ結果を何度でも再現できる。スレッドは 1 本から呼ぶこと。
@@ -169,7 +173,7 @@ data class EngineConfig(
 class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     /** 撮ったページの覚え。 */
-    private class Remembered(val requestId: Long, val reason: CaptureReason, var number: Int?, var fingerprint: PageFingerprint?)
+    private class Remembered(val requestId: Long, val reason: CaptureReason, var number: Int?)
 
     private var startedAtMs = -1L
     private var lastFrameMs = -1L
@@ -188,13 +192,15 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
 
     // 次に止まったら撮る構えか。撮ったあとは、大きな動きがあるまで false
     private var armed = true
+    // 最後に撮って（または「もう撮った」と分かって）から、スマホ自体が動いたか。
+    // 番号の読めないページは見分けがつかないので、スマホを動かしたあとでだけ撮る（影や手が通っただけでは撮り直さない）
+    private var deviceMovedSinceCapture = true
+    // ぶれた写真だったので「まだ撮っていない」に戻した番号。同じ番号で繰り返さない
+    private val retriedNumbers = ArrayDeque<Int>()
     private var lastGlimpseMs = Long.MIN_VALUE / 2
     private var notAPageUntilMs = Long.MIN_VALUE / 2
     // いま頼んでいる「番号だけ読む」は、保険の見直しか
     private var glimpseIsInsurance = false
-    // 番号が「もう撮った番号」だったので、文字で確かめているところ
-    private var verifying: Remembered? = null
-
     // 最近撮ったページ（古い順）
     private val pages = ArrayDeque<Remembered>()
 
@@ -268,15 +274,20 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         val cellFraction = velocity.over[CELL_4]
         lastMetrics = FrameMetrics(timeMs, cellFraction, velocity.max, velocity.gain, sharpness, deviceMotion)
 
+        // 撮っている最中と撮った直後は、写真を撮る処理で映像が乱れる。そのあいだは、スマホの動きだけで見る
+        val quiet = deviceMotion != null && (pending != null || timeMs - lastCaptureFinishedMs < config.postCaptureQuietMs)
+
         if (gap) {
-            if (cellFraction > config.bigCellFractionAfterGap) rearm()
+            if (!quiet && cellFraction > config.bigCellFractionAfterGap) rearm()
             if (pending != null) status = EngineStatus.CAPTURING
             return result(0f)
         }
 
         // はっきり動いたコマ
-        val unsteady = cellFraction > config.movingCellFraction || velocity.max > config.movingCellMax ||
-            (deviceMotion != null && deviceMotion > config.movingDeviceMotion)
+        val deviceUnsteady = deviceMotion != null && deviceMotion > config.movingDeviceMotion
+        if (deviceUnsteady || deviceMotion == null) deviceMovedSinceCapture = true
+        val unsteady = if (quiet) deviceUnsteady
+        else cellFraction > config.movingCellFraction || velocity.max > config.movingCellMax || deviceUnsteady
         if (unsteady) unsteadySinceMs = timeMs
         val dt = (timeMs - previousFrameMs).coerceIn(0, 100)
         motionAccumMs = if (unsteady) minOf(motionAccumMs + dt, config.sustainedMotionMs * 2) else maxOf(0, motionAccumMs - dt / 2)
@@ -292,7 +303,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             recentDevice.removeFirst()
         }
         // 大きな動き: ページをめくった、別のページへ移した
-        if ((deviceMotion != null && deviceMotion > config.bigDeviceMotion) || cellFraction > config.bigCellFraction) rearm()
+        if ((deviceMotion != null && deviceMotion > config.bigDeviceMotion) || (!quiet && cellFraction > config.bigCellFraction)) rearm()
 
         pending?.let { p ->
             if (timeMs - p.timeMs > config.captureTimeoutMs) {
@@ -370,12 +381,25 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         return result(1f, PageNeed.GLIMPSE)
     }
 
-    /** [onFrame] が [PageNeed.GLIMPSE] を返したコマについて、ページ番号のあたりを読んだ結果を伝える。 */
-    fun onPageGlimpsed(glimpse: PageGlimpse, timeMs: Long): FrameResult {
+    /**
+     * [onFrame] が [PageNeed.GLIMPSE] を返したコマについて、ページ番号のあたりを読んだ結果を伝える。
+     * @param motionDuringRead 読んでいるあいだの、スマホの回る速さの最大（ラジアン毎秒）。センサーが無ければ null
+     */
+    fun onPageGlimpsed(glimpse: PageGlimpse, timeMs: Long, motionDuringRead: Float? = null): FrameResult {
         if (pending != null) return result(1f)
         val insurance = glimpseIsInsurance
         glimpseIsInsurance = false
         val number = glimpse.pageNumber
+
+        // 読んでいるあいだに動き出していた。いま映っているものは、読んだコマとは違う。止まるのを待ち直す
+        if (motionDuringRead != null && motionDuringRead > config.readMotionLimit) {
+            unsteadySinceMs = timeMs
+            clearRecent()
+            if (motionDuringRead > config.movingDeviceMotion) deviceMovedSinceCapture = true
+            if (motionDuringRead > config.bigDeviceMotion) rearm()
+            status = if (armed || retakeArmedAtMs >= 0) EngineStatus.MOVING else EngineStatus.WAITING_NEXT_PAGE
+            return result(0f)
+        }
 
         // 「撮り直す」を頼まれている: 同じページでも撮る
         if (retakeDue(timeMs)) {
@@ -384,14 +408,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         }
 
         if (number != null) {
-            val known = pages.lastOrNull { it.number == number }
-            if (known == null) return request(CaptureReason.AUTO, timeMs, number)
-            // もう撮った番号。番号の読み違いで撮り逃さないよう、文字が読めているなら文字でも確かめる
-            if (known.fingerprint != null && !insurance) {
-                verifying = known
-                status = EngineStatus.SETTLING
-                return result(1f, PageNeed.FINGERPRINT)
-            }
+            if (pages.none { it.number == number }) return request(CaptureReason.AUTO, timeMs, number)
             return alreadyCaptured(number)
         }
 
@@ -406,22 +423,12 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             status = EngineStatus.NOT_A_PAGE
             return result(0f)
         }
-        // 先に撮る。同じページかどうかは、撮ったあとの写真の文字で見分ける
-        return request(CaptureReason.AUTO, timeMs, null)
-    }
-
-    /** [onFrame] / [onPageGlimpsed] が [PageNeed.FINGERPRINT] を返したコマについて、まん中の文字の指紋を伝える。 */
-    fun onPageObserved(fingerprint: PageFingerprint, timeMs: Long): FrameResult {
-        val known = verifying
-        verifying = null
-        if (pending != null || known == null) return result(1f)
-        val reference = known.fingerprint
-        // 文字がほとんど読めなかったら、番号のほうを信じる
-        if (reference == null || fingerprint.hashes.size < MIN_HASHES) return alreadyCaptured(known.number)
-        val similarity = PageFingerprint.similarity(reference, fingerprint)
-        lastMetrics = lastMetrics.copy(similarity = similarity)
-        if (similarity >= config.sameSimilarity) return alreadyCaptured(known.number)
-        // 番号は同じに読めたが、文字が違う。番号の読み違いなので、撮る
+        if (!deviceMovedSinceCapture) {
+            // スマホは動いていない（影が通った、手が入った、など）。番号が読めないだけで、同じページとみなす
+            armed = false
+            status = EngineStatus.WAITING_NEXT_PAGE
+            return result(0f)
+        }
         return request(CaptureReason.AUTO, timeMs, null)
     }
 
@@ -432,7 +439,6 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     fun requestManual(timeMs: Long): CaptureRequest? {
         if (pending != null) return null
         retakeArmedAtMs = -1
-        verifying = null
         val req = CaptureRequest(nextRequestId++, CaptureReason.MANUAL, timeMs)
         pending = req
         pendingNumber = null
@@ -452,7 +458,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
             val late = timedOut
             if (late != null && late.id == requestId) {
                 if (saved) {
-                    remember(Remembered(late.id, late.reason, timedOutNumber, null))
+                    remember(Remembered(late.id, late.reason, timedOutNumber))
                     armed = false
                 }
                 timedOut = null
@@ -464,10 +470,13 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         movedDuringCapture = false
         lastCaptureFinishedMs = timeMs
         if (saved) {
-            remember(Remembered(req.id, req.reason, pendingNumber, null))
+            remember(Remembered(req.id, req.reason, pendingNumber))
             shownNumber = pendingNumber
             // 撮っているあいだに動いていたら（めくり始めていたら）、次に止まったときに撮る構えのままにする
             armed = moved
+            deviceMovedSinceCapture = moved
+            // ここまでの動き（このページへ移してきた動き）は数え終えた。持ち越すと、撮った直後に「また動いた」と数えてしまう
+            motionAccumMs = 0
             status = EngineStatus.WAITING_NEXT_PAGE
         } else {
             armed = true
@@ -480,38 +489,31 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     }
 
     /**
-     * 撮った写真そのものから読んだ結果（ページ全体の文字の指紋と、ページ番号）を伝える。
+     * 撮った写真の点検の結果を伝える。
      *
-     * @return true なら、その写真は、前に撮ったページと同じ。呼び出し側は、その 1 枚を捨てる。
-     *         シャッターや「撮り直す」で撮った写真は、持ち主が望んで撮ったものなので、同じでも捨てない
+     * @param pageNumber 写真から読めたページ番号。撮る前に番号が読めていなかったときだけ使う
+     *        （実機で、撮る前の読み取りは合っていて、写真からの読み取りが違っていたことが 4 回あった）
+     * @param usable 読める写真か。ぶれていて読めないなら false。そのページは「まだ撮っていない」に戻す
+     *        （実機で、ぶれた写真だけが残り、番号は「撮った」になっていて、向け直しても撮り直されなかった）
      */
-    fun onPhotoRead(requestId: Long, fingerprint: PageFingerprint?, pageNumber: Int?): Boolean {
-        val entry = pages.firstOrNull { it.requestId == requestId }
-        val usable = fingerprint != null && fingerprint.hashes.size >= MIN_HASHES
-        if (entry == null) {
-            // 覚えから外れていた（古い、または本を切り替えた）
-            return false
-        }
-        if (entry.reason == CaptureReason.AUTO) {
-            val duplicate = pages.any { other ->
-                if (other === entry) return@any false
-                val reference = other.fingerprint
-                if (usable && reference != null) PageFingerprint.similarity(reference, fingerprint!!) >= config.sameSimilarity
-                // 文字で比べられないときだけ、番号で比べる
-                else pageNumber != null && other.number == pageNumber
+    fun onPhotoInspected(requestId: Long, pageNumber: Int?, usable: Boolean) {
+        val entry = pages.firstOrNull { it.requestId == requestId } ?: return
+        if (!usable && entry.reason == CaptureReason.AUTO) {
+            val number = entry.number
+            // 同じ番号で 2 回続けてぶれたら、それ以上は繰り返さない（暗い部屋で、撮っては知らせる、が続かないように）
+            if (number != null && number in retriedNumbers) return
+            if (number != null) {
+                retriedNumbers.addLast(number)
+                while (retriedNumbers.size > config.rememberedPages) retriedNumbers.removeFirst()
             }
-            if (duplicate) {
-                pages.remove(entry)
-                return true
-            }
+            pages.remove(entry)
+            if (shownNumber == number) shownNumber = null
+            return
         }
-        if (usable) entry.fingerprint = fingerprint
-        // 写真のほうが大きく写っているので、番号は写真から読めたものを優先する
-        if (pageNumber != null) {
-            if (shownNumber == entry.number || shownNumber == null) shownNumber = pageNumber
+        if (entry.number == null && pageNumber != null) {
             entry.number = pageNumber
+            if (shownNumber == null && pages.lastOrNull() === entry) shownNumber = pageNumber
         }
-        return false
     }
 
     /**
@@ -523,8 +525,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
     /** 「撮り直す」。直前の 1 枚を消したうえで、構え直して止まったら、同じページでも撮る。 */
     fun armRetake(timeMs: Long) {
         retakeArmedAtMs = timeMs
-        verifying = null
-        // 消した 1 枚の覚えは外す（撮り直した写真が、それと同じだからと捨てられないように）
+        // 消した 1 枚の覚えは外す
         if (pages.isNotEmpty()) pages.removeLast()
     }
 
@@ -534,21 +535,19 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         wasBlank = true
     }
 
-    /** 覚えているページ（古い順）。番号（無ければ -1）と、指紋の数値。アプリを開き直しても二度撮りしないよう、保存しておくのに使う。 */
-    fun rememberedPages(): List<Pair<Int, IntArray>> = pages.map { (it.number ?: -1) to (it.fingerprint?.hashes ?: IntArray(0)) }
+    /** 覚えているページ番号（古い順）。アプリを開き直しても二度撮りしないよう、保存しておくのに使う。 */
+    fun rememberedPages(): List<Int> = pages.mapNotNull { it.number }
 
     /** 保存しておいた覚えを戻す。 */
-    fun restorePages(saved: List<Pair<Int, IntArray>>) {
+    fun restorePages(saved: List<Int>) {
         pages.clear()
-        for ((number, hashes) in saved.takeLast(config.rememberedPages)) {
-            val fp = if (hashes.size >= MIN_HASHES) PageFingerprint(hashes, 0, 0) else null
-            pages.addLast(Remembered(0, CaptureReason.AUTO, number.takeIf { it >= 0 }, fp))
-        }
+        for (number in saved.takeLast(config.rememberedPages)) pages.addLast(Remembered(0, CaptureReason.AUTO, number))
     }
 
     /** 本を切り替えた。覚えているページを忘れる。 */
     fun reset() {
         pages.clear()
+        retriedNumbers.clear()
         retakeArmedAtMs = -1
         shownNumber = null
         onCameraRestarted()
@@ -562,7 +561,7 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         clearRecent()
         motionAccumMs = 0
         armed = true
-        verifying = null
+        deviceMovedSinceCapture = true
         glimpseIsInsurance = false
         notAPageUntilMs = Long.MIN_VALUE / 2
         pending = null
@@ -579,21 +578,19 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         // CoarseDiff.thresholds の中の位置（4 段階）
         const val CELL_4 = 1
 
-        /** 比べるのに要る、指紋の数値の数。これより少ないと、たまたまの重なりで決まってしまう */
-        const val MIN_HASHES = 20
-
         /** コマとコマのあいだがこれより空いたら、「止まっているか」の比較には使わない */
         const val FRAME_GAP_MS = 200L
     }
 
     private fun rearm() {
         armed = true
-        verifying = null
         notAPageUntilMs = Long.MIN_VALUE / 2
     }
 
     private fun alreadyCaptured(number: Int?): FrameResult {
         armed = false
+        deviceMovedSinceCapture = false
+        motionAccumMs = 0
         shownNumber = number
         status = EngineStatus.WAITING_NEXT_PAGE
         return result(0f)
@@ -606,7 +603,6 @@ class CaptureEngine(private val config: EngineConfig = EngineConfig()) {
         pending = req
         pendingNumber = number
         movedDuringCapture = false
-        verifying = null
         status = EngineStatus.CAPTURING
         return FrameResult(status, req, 1f, lastMetrics, PageNeed.NONE, number)
     }

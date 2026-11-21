@@ -2,7 +2,6 @@ package app.readingcapture.capture
 
 import android.graphics.Bitmap
 import app.readingcapture.core.detect.NumberCandidate
-import app.readingcapture.core.detect.PageFingerprint
 import app.readingcapture.core.detect.PageGlimpse
 import app.readingcapture.core.detect.PageNumberPicker
 import app.readingcapture.core.detect.ReadLine
@@ -33,7 +32,8 @@ class TextLineDetector {
     /** 写真 1 枚を読んだ結果。 */
     class Reading(
         val boxes: List<TextBox>,
-        val fingerprint: PageFingerprint,
+        /** 読めた文字の数（文字そのものは持たない） */
+        val chars: Int,
         val pageNumber: Int?,
         /** ページの外側（綴じ目の反対側）。ページ番号が左右どちらかの隅にあれば、そちら。分からなければ null */
         val outerSide: Side?,
@@ -47,7 +47,7 @@ class TextLineDetector {
 
     private var cropPixels = IntArray(0)
 
-    /** 画像から、行の枠・ページの指紋・ページ番号を取り出す。 */
+    /** 画像から、行の枠・文字の数・ページ番号を取り出す。 */
     fun read(bitmap: Bitmap): Reading {
         val text = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)), 10, TimeUnit.SECONDS)
         val (lines, numbers) = layout(text)
@@ -60,12 +60,10 @@ class TextLineDetector {
                 else -> null
             }
         }
-        return Reading(lines.map { it.box }, fingerprintOf(text), number?.value, outer, numbers)
+        return Reading(lines.map { it.box }, lines.sumOf { it.chars }, number?.value, outer, numbers)
     }
 
     fun detect(bitmap: Bitmap): List<TextBox> = read(bitmap).boxes
-
-    fun fingerprint(bitmap: Bitmap): PageFingerprint = read(bitmap).fingerprint
 
     /**
      * カメラの映像のコマ（明るさの面）の、上の帯と下の帯だけを読んで、ページ番号を探す。
@@ -91,18 +89,6 @@ class TextLineDetector {
         var bitmap = fill(y, rowStride, columns, height)
         if (upscale != 1f) bitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * upscale).toInt(), (bitmap.height * upscale).toInt(), true)
         return toGlimpse(process(bitmap, rotationDegrees))
-    }
-
-    /**
-     * カメラの映像のコマ（明るさの面）の、まん中の部分だけを読んで、指紋を作る。
-     * ページ番号が「もう撮った番号」だったときに、番号の読み違いでないかを確かめるのに使う。
-     */
-    fun fingerprintOfCenter(y: ByteArray, width: Int, height: Int, rowStride: Int, rotationDegrees: Int): PageFingerprint {
-        val cw = (width * CENTER_FRACTION).toInt()
-        val ch = (height * CENTER_FRACTION).toInt()
-        val x0 = (width - cw) / 2
-        val y0 = (height - ch) / 2
-        return fingerprintOf(process(fill(y, rowStride, intArrayOf(x0, x0 + cw), ch, y0), rotationDegrees))
     }
 
     // ---- 内部 ----
@@ -160,15 +146,7 @@ class TextLineDetector {
         return lines to numbers
     }
 
-    private fun fingerprintOf(text: Text): PageFingerprint {
-        val lines = ArrayList<String>()
-        for (block in text.textBlocks) for (line in block.lines) lines += line.text
-        return PageFingerprint.of(lines)
-    }
-
     companion object {
-        const val CENTER_FRACTION = 0.62f
-
         /**
          * ページ番号を探す帯の高さ（映像の高さに対する割合）。
          * 狭くすると速いが、帯に番号しか入らないとき（ページの下が余白や図）に、番号を見つけられなくなる

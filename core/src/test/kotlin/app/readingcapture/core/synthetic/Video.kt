@@ -4,7 +4,6 @@ import app.readingcapture.core.detect.CaptureEngine
 import app.readingcapture.core.detect.CaptureReason
 import app.readingcapture.core.detect.CaptureRequest
 import app.readingcapture.core.detect.EngineStatus
-import app.readingcapture.core.detect.PageFingerprint
 import app.readingcapture.core.detect.PageGlimpse
 import app.readingcapture.core.detect.PageNeed
 import app.readingcapture.core.frame.LumaImage
@@ -80,6 +79,8 @@ data class SimCapture(
     /** 撮っているあいだに動いた、とエンジンが言ったか */
     val moved: Boolean,
     val requestId: Long = 0,
+    /** 撮っているあいだにスマホが動いていて、写真がぶれた */
+    val blurred: Boolean = false,
 )
 
 /**
@@ -88,8 +89,9 @@ data class SimCapture(
  * - 手に持っているときの、ゆっくりした位置・傾き・大きさのふらつきと、細かな揺れ、明るさのちらつき
  *   （実機で、これらの無い合成の映像では通るのに自動で撮れない、という不具合が出た）
  * - スマホ自体の動き（回る速さ）
- * - 文字認識の読み違いと読み落とし、ページ番号の読み落とし、読むのにかかる時間（そのあいだコマが届かない）
- * - 撮ったあとの写真の仕上げ（ページ全体の文字と番号が読めるまでの時間）と、同じページだった写真を捨てること
+ * - ページ番号の読み落としと読み違い、読むのにかかる時間（そのあいだコマが届かない）、読んでいるあいだの動き
+ * - 写真を撮るときの、判定用の映像の乱れ（実機で、これを「動いた」と数えて同じ場所でもう一度撮っていた）
+ * - 撮ったあとの写真の点検（番号が読めるまでの時間、ぶれていて読めない写真）
  * - 撮る合図から撮り終わりまでの時間と、撮れたときの振動による揺れ
  */
 class Simulation(
@@ -105,40 +107,31 @@ class Simulation(
     var dropFirstFinishes: Int = 0,
     /** 手に持っているときのふらつきの大きさ（1 = ふつう、0 = 台に固定） */
     private val handheld: Float = 1f,
-    /** 文字認識が 1 文字を読み違える割合 */
-    private val charError: Double = 0.10,
-    /** 文字認識が 1 行を読み落とす割合 */
-    private val lineDrop: Double = 0.08,
-    /**
-     * まん中の文字を読むのにかかる時間。このあいだ、コマは届かない。
-     * 実機（Pixel 6a）では 0.4〜0.9 秒かかり、そのあとのコマを「大きく動いた」と数えてしまう不具合が出た
-     */
-    private val readLatencyMs: Long = 500,
-    /** ページ番号のあたりだけを読むのにかかる時間 */
+    /** ページ番号のあたりだけを読むのにかかる時間。実機では 0.15〜0.86 秒 */
     private val glimpseLatencyMs: Long = 200,
     /** ページ番号を読み落とす割合。実機の写真 8 枚では 1 枚で読めなかった */
     private val numberMiss: Double = 0.12,
     /** ページ番号を読み違えたことにする（本当の番号 → 読めた番号）。null なら読み違えない */
     var misreadNumber: ((Int) -> Int)? = null,
-    /** 撮った写真の仕上げ（ページ全体の指紋ができるまで）にかかる時間 */
+    /** 撮った写真の点検にかかる時間 */
     private val processLatencyMs: Long = 1400,
+    /** 写真を撮っている最中と、そのあとこの時間、判定用の映像が乱れる。0 なら乱れない */
+    private val captureDisturbanceMs: Long = 350,
 ) {
+    private class Inspection(val dueMs: Long, val requestId: Long, val page: SyntheticPage?, val usable: Boolean)
+
     private var readingUntil = -1L
-    private val enrichments = ArrayList<Triple<Long, Long, SyntheticPage?>>()
+    private val inspections = ArrayList<Inspection>()
     val captures = mutableListOf<SimCapture>()
     val requests = mutableListOf<Pair<Long, Int?>>()
     val statuses = mutableListOf<EngineStatus>()
-
-    /** まん中の文字を読んだ回数（時間のかかる読み方） */
-    var pageChecks = 0
-        private set
 
     /** ページ番号のあたりだけを読んだ回数 */
     var glimpses = 0
         private set
 
-    /** 撮ったあと、前に撮ったページと同じだと分かって捨てた枚数 */
-    var discarded = 0
+    /** 読んでいるあいだに動いていたので、結果を使わなかった回数 */
+    var rejectedGlimpses = 0
         private set
     var nowMs = 0L
         private set
@@ -148,8 +141,8 @@ class Simulation(
     private var pendingState: SceneState? = null
     private var pendingFinishAt = 0L
     private var shakeUntil = -1L
+    private var disturbedUntil = -1L
     private var current: SceneState = SceneState(null)
-    private var gyroDuringRead = 0f
 
     fun run(script: VideoScript): List<SimCapture> {
         val actionsByFrame = script.actions.groupBy({ it.first }, { it.second })
@@ -177,58 +170,58 @@ class Simulation(
                 shakeY = raw.shakeY + (random.nextFloat() * 2 - 1) * 0.5f,
                 gain = raw.gain * (1f + (random.nextFloat() * 2 - 1) * 0.012f),
             )
-            var gyro = raw.gyro ?: (0.03f + 0.04f * random.nextFloat()) * maxOf(handheld, 0.05f)
+            var gyro = gyroOf(raw)
             if (nowMs < shakeUntil) {
                 val sign = if (i % 2 == 0) 1 else -1
                 state = state.copy(shakeX = state.shakeX + sign * vibrationShakePx, shakeY = state.shakeY - sign * vibrationShakePx * 0.5f)
                 gyro = maxOf(gyro, 0.8f)
             }
-            // 写真の仕上げが済んだら、ページ全体の指紋を渡す
-            val due = enrichments.filter { it.first <= nowMs }
+            // 写真を撮っている最中と直後は、判定用の映像が大きく乱れる（スマホは動いていない）
+            if (captureDisturbanceMs > 0 && (pending != null || nowMs < disturbedUntil)) {
+                val sign = if (i % 2 == 0) 1 else -1
+                state = state.copy(shakeX = state.shakeX + sign * 14f, shakeY = state.shakeY - sign * 9f, gain = state.gain * (1f + sign * 0.2f))
+            }
+            // 写真の点検が済んだら、結果を渡す
+            val due = inspections.filter { it.dueMs <= nowMs }
             for (e in due) {
-                enrichments.remove(e)
-                val page = e.third
-                val fingerprint = page?.let { PageFingerprint.of(noisy(it.textLines, charError * 0.5, lineDrop * 0.5)) }
-                val number = page?.takeIf { it.options.pageNumber && random.nextDouble() >= numberMiss * 0.5 }?.id
-                if (engine.onPhotoRead(e.second, fingerprint, number)) {
-                    // 前に撮ったページと同じだった。その 1 枚は捨てる
-                    captures.removeAll { it.requestId == e.second }
-                    discarded++
-                }
+                inspections.remove(e)
+                val number = e.page?.takeIf { it.options.pageNumber && random.nextDouble() >= numberMiss * 0.5 }?.id
+                engine.onPhotoInspected(e.requestId, number, e.usable)
             }
-            // 文字を読んでいるあいだは、コマが届かない（そのあいだの動きセンサーの値は、次のコマにまとめて届く）
-            if (nowMs < readingUntil) {
-                gyroDuringRead = maxOf(gyroDuringRead, gyro)
-                continue
-            }
-            if (gyroDuringRead > 0f) {
-                gyro = maxOf(gyro, gyroDuringRead)
-                gyroDuringRead = 0f
-            }
+            // 文字を読んでいるあいだは、コマが届かない
+            if (nowMs < readingUntil) continue
             val frame = renderer.render(state, i).toWork()
             var result = engine.onFrame(frame, nowMs, gyro)
             var rounds = 0
             while (result.need != PageNeed.NONE && rounds++ < 3) {
                 val from = maxOf(nowMs, readingUntil)
-                if (result.need == PageNeed.GLIMPSE) {
-                    glimpses++
-                    readingUntil = from + glimpseLatencyMs
-                    result = engine.onPageGlimpsed(glimpse(raw), readingUntil)
-                } else {
-                    pageChecks++
-                    readingUntil = from + readLatencyMs
-                    result = engine.onPageObserved(observe(raw, t), readingUntil)
-                }
+                glimpses++
+                readingUntil = from + glimpseLatencyMs
+                // 読んでいるあいだの動き（台本の、この先のコマから）
+                val lastFrame = minOf(script.frames.size - 1, ((readingUntil * script.fps) / 1000).toInt())
+                var motion = 0f
+                for (k in i..lastFrame) motion = maxOf(motion, gyroOf(script.frames[k]))
+                val before = engine.status
+                result = engine.onPageGlimpsed(glimpse(raw), readingUntil, motion)
+                if (result.request == null && motion > 0.2f && before != EngineStatus.NOT_A_PAGE) rejectedGlimpses++
             }
             statuses.add(result.status)
-            result.request?.let { begin(it, raw) }
+            result.request?.let { begin(it, script, i) }
         }
         return captures
     }
 
+    private fun gyroOf(state: SceneState): Float = state.gyro ?: (0.03f + 0.04f * random.nextFloat()) * maxOf(handheld, 0.05f)
+
     /** シャッター・音量ボタン。 */
     fun manual() {
-        engine.requestManual(nowMs)?.let { begin(it, current) }
+        engine.requestManual(nowMs)?.let { req ->
+            requests += nowMs to current.truthPageId
+            pending = req
+            pendingState = current
+            pendingMotion = current.gyro ?: 0f
+            pendingFinishAt = nowMs + captureLatencyMs
+        }
     }
 
     /** ページ番号のあたりだけを読むまね。 */
@@ -236,21 +229,6 @@ class Simulation(
         val page = visiblePage(state) ?: return PageGlimpse(null, hasText = false)
         if (!page.options.pageNumber || random.nextDouble() < numberMiss) return PageGlimpse(null, hasText = true)
         return PageGlimpse(misreadNumber?.invoke(page.id) ?: page.id, hasText = true)
-    }
-
-    /**
-     * 文字認識のまね。映像のまん中あたり（行の 6 割）だけを読み、読み違い・読み落としを混ぜて指紋にする。
-     * 手のふらつきで、読める範囲は少しずつずれる。
-     */
-    private fun observe(state: SceneState, t: Double): PageFingerprint {
-        val page = visiblePage(state) ?: return PageFingerprint.of(emptyList())
-        page.full
-        val all = page.textLines
-        val shift = (0.08 * sin(2 * PI * t / 3.7)).toFloat()
-        val from = ((0.2f + shift) * all.size).toInt().coerceIn(0, all.size)
-        val to = ((0.8f + shift) * all.size).toInt().coerceIn(from, all.size)
-        val drop = lineDrop + (if (state.hand != null) 0.2 else 0.0) + state.blurRadius * 0.08
-        return PageFingerprint.of(noisy(all.subList(from, to), charError + state.blurRadius * 0.05, drop))
     }
 
     /** 暗すぎる、ぼけている、めくっている途中は、ほとんど読めない。 */
@@ -261,17 +239,22 @@ class Simulation(
         else -> state.page
     }
 
-    private fun noisy(lines: List<String>, error: Double, drop: Double): List<String> =
-        lines.filter { random.nextDouble() >= drop }.map { line ->
-            buildString { for (c in line) append(if (random.nextDouble() < error) (0x4E00 + random.nextInt(3000)).toChar() else c) }
-        }
+    // 撮っているあいだ（撮る合図から撮り終わりまで）の、スマホの動きの最大
+    private var pendingMotion = 0f
 
-    private fun begin(request: CaptureRequest, state: SceneState) {
+    private fun begin(request: CaptureRequest, script: VideoScript, frameIndex: Int) {
+        // 撮り始めるのは、文字を読み終えてから。写るのは、そのときに映っているもの
+        val startMs = maxOf(nowMs, readingUntil)
+        val startFrame = minOf(script.frames.size - 1, ((startMs * script.fps) / 1000).toInt())
+        val endFrame = minOf(script.frames.size - 1, (((startMs + captureLatencyMs) * script.fps) / 1000).toInt())
+        val state = script.frames[startFrame]
         requests += nowMs to state.truthPageId
         pending = request
         pendingState = state
-        // 撮り始めるのは、文字を読み終えてから
-        pendingFinishAt = maxOf(nowMs, readingUntil) + captureLatencyMs
+        var motion = 0f
+        for (k in startFrame..endFrame) motion = maxOf(motion, script.frames[k].gyro ?: 0f)
+        pendingMotion = motion
+        pendingFinishAt = startMs + captureLatencyMs
     }
 
     private fun finishIfDue(current: SceneState) {
@@ -279,6 +262,7 @@ class Simulation(
         if (nowMs < pendingFinishAt) return
         val state = pendingState ?: current
         pending = null
+        disturbedUntil = nowMs + captureDisturbanceMs
         if (dropFirstFinishes > 0) {
             dropFirstFinishes--
             return
@@ -289,12 +273,15 @@ class Simulation(
             return
         }
         val outcome = engine.onCaptureFinished(req.id, nowMs, saved = true)
+        // 撮っているあいだにスマホが動いていたら、写真はぶれて読めない
+        val blurred = pendingMotion > 0.25f
+        val page = visiblePage(state)
         captures.add(
-            SimCapture(req.timeMs, req.reason, state.truthPageId, state.hand != null, state.blurRadius, state.curl, outcome.movedDuringCapture, req.id),
+            SimCapture(req.timeMs, req.reason, state.truthPageId, state.hand != null, state.blurRadius, state.curl, outcome.movedDuringCapture, req.id, blurred),
         )
         engine.notifyVibration(nowMs, vibrationMs + 150)
         shakeUntil = nowMs + vibrationMs
-        enrichments += Triple(nowMs + processLatencyMs, req.id, visiblePage(state)?.also { it.full })
+        inspections += Inspection(nowMs + processLatencyMs, req.id, page.takeUnless { blurred }, usable = !blurred && page != null)
     }
 
     private fun LumaImage.toWork(): LumaImage = downsampleToLongSide(workLongSide)
