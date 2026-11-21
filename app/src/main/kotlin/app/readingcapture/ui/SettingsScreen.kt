@@ -63,9 +63,9 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
         Text("設定", style = Type.bodyStrong.copy(fontSize = Type.body.fontSize * 1.25f), color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
 
         Heading("GitHub 連携")
-        Label("リポジトリ（owner/repo）")
-        Field(repo, { repo = it }, placeholder = "例: owner/reading-inbox")
-        Label(if (hasToken) "アクセストークン（設定済み。変更するときだけ入力）" else "アクセストークン")
+        Label("リポジトリ")
+        Field(repo, { repo = it }, placeholder = "owner/repo")
+        Label(if (hasToken) "アクセストークン（設定済み）" else "アクセストークン")
         Field(token, { token = it }, placeholder = if (hasToken) "••••••••" else "github_pat_…", secret = true)
         Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             PrimaryButton(
@@ -88,13 +88,13 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
                         hasToken = container.vault.hasToken
                         token = ""
                         result = outcome.fold(
-                            onSuccess = { true to "接続に成功しました（書き込み可）" },
+                            onSuccess = { true to "接続 OK" },
                             onFailure = { e ->
                                 false to when (e) {
-                                    is InboxException.Unauthorized -> "トークンが無効です。入力ミスか、有効期限切れの可能性があります"
-                                    is InboxException.NoPermission -> "認証は成功しましたが、書き込み権限がありません。Contents を Read and write に設定してください"
-                                    is InboxException.NotFound -> "リポジトリが見つかりません。リポジトリ名と、トークンの対象リポジトリを確認してください"
-                                    is InboxException.Network -> "接続できません。ネットワーク接続を確認してください"
+                                    is InboxException.Unauthorized -> "トークンが無効です（入力ミスか有効期限切れ）"
+                                    is InboxException.NoPermission -> "書き込み権限がありません（Contents を Read and write に設定）"
+                                    is InboxException.NotFound -> "リポジトリが見つかりません（リポジトリ名か、トークンの対象リポジトリ）"
+                                    is InboxException.Network -> "接続できません"
                                     else -> "接続テストに失敗しました（${e.message ?: "原因不明"}）"
                                 }
                             },
@@ -114,11 +114,13 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
             TextAction("トークンを端末から削除", onClick = {
                 container.vault.clear()
                 hasToken = false
-                result = false to "トークンを削除しました。アップロードするには再設定してください"
+                result = false to "トークンを削除しました"
             }, color = c.danger, modifier = Modifier.padding(horizontal = 12.dp))
         }
-        Note("トークンの作成手順: GitHub の Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token。Repository access は Only select repositories で対象のリポジトリだけを選択し、Permissions の Contents を Read and write に設定します。")
-        Note("トークンは端末内に暗号化して保存します。端末を紛失した場合は、GitHub の同じ画面でトークンを削除してください。")
+        // 作成手順が要るのは、トークンを設定するまで
+        if (!hasToken) {
+            Note("GitHub の Settings → Developer settings → Personal access tokens → Fine-grained tokens で作成。Repository access: Only select repositories（対象のリポジトリのみ）、Permissions: Contents を Read and write。")
+        }
 
         Heading("アップロード状況")
         val line = buildString {
@@ -133,10 +135,8 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
                 container.sync.kick()
             }, color = c.accent, enabled = !status.running)
         }
-        Note("写真とメモは、アップロードの完了を確認するまで端末から削除しません。オフライン時は端末に保存し、接続が回復したら自動でアップロードします。")
 
         Heading("撮影完了時のバイブレーション")
-        Note("タップすると再生されます。選択したものが、撮影完了時のバイブレーションになります。")
         var chosen by remember { mutableStateOf(container.haptics.selected.id) }
         for ((title, choices) in listOf("長さ指定" to container.haptics.lengths, "プリセット" to container.haptics.presets, "その他" to container.haptics.primitives)) {
             if (choices.isEmpty()) continue
@@ -177,7 +177,6 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
                 colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.onAccent),
             )
         }
-        Note("撮り逃しや重複撮影が続くときの原因調査用です。通常はオフのままで構いません。")
 
         Spacer(Modifier.height(24.dp))
         Text("Reading Capture ${BuildConfig.VERSION_NAME}", style = Type.tiny, color = c.text3, modifier = Modifier.padding(horizontal = 22.dp))

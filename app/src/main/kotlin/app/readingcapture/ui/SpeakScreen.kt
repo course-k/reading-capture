@@ -113,12 +113,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
             if (notes.isNotEmpty()) listState.scrollToItem(notes.size)
         }
         LazyColumn(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 20.dp), state = listState) {
-            item {
-                Text(
-                    if (notes.isEmpty()) "この節のメモはまだありません" else "この節のメモ",
-                    style = Type.tiny, color = c.text3, modifier = Modifier.padding(top = 14.dp, bottom = 10.dp),
-                )
-            }
+            item { Box(Modifier.height(14.dp)) }
             items(notes, key = { it.id }) { note ->
                 var menu by remember { mutableStateOf(false) }
                 Box {
@@ -130,7 +125,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                         Text(note.text, style = Type.body, color = c.text)
                         val waiting = note.state == NoteState.PENDING
                         Text(
-                            Texts.time(note.spokenAt) + if (waiting) " ・ アップロード待ち" else "",
+                            Texts.time(note.spokenAt) + if (waiting) " ・ 未アップロード" else "",
                             style = Type.tiny, color = if (waiting) c.accent else c.text3, modifier = Modifier.padding(top = 2.dp),
                         )
                     }
@@ -176,7 +171,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                 TextAction("›", onClick = { next?.let { select(it) } }, enabled = next != null, style = Type.body.copy(fontSize = Type.body.fontSize * 1.5f))
             } else {
                 Text(
-                    "この本の目次が未登録のため、章・節なしで保存します",
+                    "目次未登録（章・節なしで保存）",
                     style = Type.small, color = c.text3, modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
                 )
             }
@@ -194,7 +189,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                 lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 3, maxHeightInLines = 8),
                 modifier = Modifier.fillMaxWidth(),
                 decorator = { inner ->
-                    if (field.text.isEmpty()) Text("メモを入力（音声入力可）", style = Type.body, color = c.text3)
+                    if (field.text.isEmpty()) Text("メモを入力", style = Type.body, color = c.text3)
                     inner()
                 },
             )
@@ -227,7 +222,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
     }
 
     if (showToc && navigator != null) {
-        TocSheet(navigator, current = position, title = "章・節を選択", onDismiss = { showToc = false }) {
+        TocSheet(navigator, current = position, title = null, onDismiss = { showToc = false }) {
             select(it)
             showToc = false
         }

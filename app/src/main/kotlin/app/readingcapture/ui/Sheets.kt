@@ -28,7 +28,7 @@ import app.readingcapture.core.toc.TocPosition
 /** 目次から章・節を選ぶ。章の名前の下に、その章の節が並ぶ。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TocSheet(navigator: TocNavigator, current: TocPosition?, title: String, onDismiss: () -> Unit, onSelect: (TocPosition) -> Unit) {
+fun TocSheet(navigator: TocNavigator, current: TocPosition?, title: String?, onDismiss: () -> Unit, onSelect: (TocPosition) -> Unit) {
     val c = LocalColors.current
     // 章の見出しと節を、1 本の並びにする
     val rows = remember(navigator) {
@@ -46,7 +46,7 @@ fun TocSheet(navigator: TocNavigator, current: TocPosition?, title: String, onDi
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (currentIndex - 2).coerceAtLeast(0))
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.bg) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
-            Text(title, style = Type.labelStrong, color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp))
+            title?.let { Text(it, style = Type.labelStrong, color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp)) }
             LazyColumn(state = listState, modifier = Modifier.fillMaxWidth()) {
                 itemsIndexed(rows) { _, row ->
                     val (heading, pos) = row
@@ -74,15 +74,10 @@ fun BookSheet(container: AppContainer, currentBookId: String, onDismiss: () -> U
     var message by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.bg) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)) {
-            Text("本を選択", style = Type.labelStrong, color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp))
             if (books.isEmpty()) {
                 Text(
-                    if (container.vault.hasToken) "リポジトリに本が登録されていません。" else "アクセストークンを設定すると、本の一覧が表示されます。",
-                    style = Type.body, color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp),
-                )
-                Text(
-                    "本を追加するには、Claude に書名を伝えてください。目次と一緒に登録されます。",
-                    style = Type.small, color = c.text2, modifier = Modifier.padding(horizontal = 22.dp),
+                    if (container.vault.hasToken) "本が未登録" else "トークン未設定",
+                    style = Type.body, color = c.text2, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp),
                 )
             }
             for (book in books) {
@@ -90,12 +85,12 @@ fun BookSheet(container: AppContainer, currentBookId: String, onDismiss: () -> U
             }
             Box(Modifier.height(10.dp))
             message?.let { Text(it, style = Type.small, color = c.text2, modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp)) }
-            ListRow("本の一覧を再読み込み") {
+            ListRow("再読み込み") {
                 message = "読み込み中…"
                 container.refreshBooks(force = true) { result ->
                     message = result.fold(
-                        onSuccess = { if (it) "更新しました" else "変更はありません" },
-                        onFailure = { "読み込みに失敗しました。ネットワーク接続とトークンを確認してください" },
+                        onSuccess = { null },
+                        onFailure = { "読み込みに失敗しました" },
                     )
                 }
             }

@@ -63,9 +63,6 @@ fun PhotosScreen(container: AppContainer, bookId: String, onBack: () -> Unit) {
             TextAction("‹ 戻る", onClick = onBack)
             Text("今日の写真（${photos.size} 枚）", style = Type.labelStrong, color = c.text, modifier = Modifier.padding(start = 6.dp))
         }
-        if (photos.isEmpty()) {
-            Text("今日撮影した写真はありません", style = Type.body, color = c.text3, modifier = Modifier.padding(22.dp))
-        }
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
             contentPadding = PaddingValues(14.dp),
@@ -85,7 +82,7 @@ fun PhotosScreen(container: AppContainer, bookId: String, onBack: () -> Unit) {
                     }
                     val uploaded = photo.state == PhotoState.UPLOADED
                     Text(
-                        Texts.time(photo.capturedAt) + if (uploaded) " ・ アップロード済み" else " ・ 未アップロード",
+                        Texts.time(photo.capturedAt) + if (uploaded) "" else " ・ 未アップロード",
                         style = Type.tiny, color = if (uploaded) c.text3 else c.accent, modifier = Modifier.padding(top = 4.dp),
                     )
                 }
@@ -107,7 +104,7 @@ private fun PhotoViewer(container: AppContainer, photo: Photo, onBack: () -> Uni
         Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             TextAction("‹ 戻る", onClick = onBack)
             Box(Modifier.weight(1f))
-            TextAction("この写真を削除", onClick = {
+            TextAction("削除", onClick = {
                 container.capture.delete(photo)
                 onBack()
             }, color = c.danger)

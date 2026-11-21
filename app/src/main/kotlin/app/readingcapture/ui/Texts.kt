@@ -9,20 +9,16 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-/** 画面の言葉。短く、次にすることが分かる一言にする。 */
+/** 画面の文言。状態・操作のラベル・エラーだけを出し、使い方の説明は出さない。 */
 object Texts {
 
-    fun status(status: EngineStatus, justCaptured: Boolean, pageNumber: Int?): String = when (status) {
-        EngineStatus.STARTING -> "カメラを準備中"
-        // 動いている・止まりかけている、は同じ言葉にする（手に持つと行き来するので、言葉が変わるとちらつく）
-        EngineStatus.MOVING, EngineStatus.SETTLING -> "ページに向けて静止すると自動で撮影します"
-        EngineStatus.CAPTURING -> "撮影中"
-        EngineStatus.WAITING_NEXT_PAGE -> when {
-            pageNumber != null -> "$pageNumber ページを撮影しました"
-            justCaptured -> "撮影しました"
-            else -> "次のページを待機中"
-        }
+    /** 撮影画面の状態表示。空文字のときは何も出さない。 */
+    fun status(status: EngineStatus, pageNumber: Int?): String = when (status) {
+        // いま向けているページは撮影済み（めくるまで撮影しない）
+        EngineStatus.WAITING_NEXT_PAGE -> if (pageNumber != null) "p.$pageNumber 撮影済み" else "撮影済み"
+        // 自動撮影しない理由
         EngineStatus.NOT_A_PAGE -> "ページを検出できません"
+        else -> ""
     }
 
     private fun side(s: Side) = when (s) {
@@ -37,25 +33,21 @@ object Texts {
         val parts = ArrayList<String>()
         if (w.cut.isNotEmpty()) {
             val sides = listOf(Side.LEFT, Side.RIGHT, Side.TOP, Side.BOTTOM).filter { it in w.cut }.joinToString("・") { side(it) }
-            parts += "${sides}端で文字が見切れています"
+            parts += "見切れ（$sides）"
         }
-        if (w.blurred) parts += if (parts.isEmpty()) "ブレている可能性があります" else "ブレあり"
-        if (w.dark) parts += if (parts.isEmpty()) "暗すぎます。ライトを点けるか、明るい場所で撮影してください" else "暗い"
-        return when (parts.size) {
-            0 -> ""
-            1 -> parts[0]
-            else -> parts[0] + "（" + parts.drop(1).joinToString("・") + "）"
-        }
+        if (w.blurred) parts += "ブレ"
+        if (w.dark) parts += "暗い"
+        return parts.joinToString("・")
     }
 
     fun syncProblem(p: SyncProblem): String = when (p) {
         SyncProblem.NO_KEY -> "アクセストークンが未設定です"
-        SyncProblem.BAD_KEY -> "トークンが無効です。再設定してください"
-        SyncProblem.NO_PERMISSION -> "このトークンにはリポジトリへの書き込み権限がありません"
+        SyncProblem.BAD_KEY -> "トークンが無効です"
+        SyncProblem.NO_PERMISSION -> "トークンに書き込み権限がありません"
         SyncProblem.NOT_FOUND -> "リポジトリが見つかりません"
-        SyncProblem.OFFLINE -> "オフラインです。接続が回復したらアップロードします"
-        SyncProblem.BUSY -> "サーバーが混雑しています。しばらくしてからリトライします"
-        SyncProblem.OTHER -> "アップロードに失敗しました。後でリトライします"
+        SyncProblem.OFFLINE -> "オフライン"
+        SyncProblem.BUSY -> "サーバーが混雑中（自動でリトライ）"
+        SyncProblem.OTHER -> "アップロード失敗（自動でリトライ）"
     }
 
     private val TIME = DateTimeFormatter.ofPattern("H:mm")

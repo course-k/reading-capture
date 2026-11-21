@@ -55,14 +55,13 @@ import app.readingcapture.core.inbox.PhotoKind
 import app.readingcapture.core.quality.Side
 import app.readingcapture.data.Photo
 import app.readingcapture.data.PhotoState
-import app.readingcapture.data.SyncCounts
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** 「撮る」。カメラの映像が主役。重ねるのは状態の一言だけ。 */
 @Composable
-fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, onOpenPhotos: () -> Unit) {
+fun CaptureScreen(container: AppContainer, bookId: String, onOpenPhotos: () -> Unit) {
     val c = LocalColors.current
     val context = LocalContext.current
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
@@ -78,10 +77,6 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
 
     if (!granted) {
         Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("ページを撮影するには、カメラへのアクセスを許可してください", style = Type.bodyStrong, color = c.text)
-            Spacer(Modifier.height(8.dp))
-            Text("写真は、端末内と自分の GitHub リポジトリにのみ保存されます。", style = Type.small, color = c.text2)
-            Spacer(Modifier.height(24.dp))
             PrimaryButton("カメラへのアクセスを許可", onClick = { launcher.launch(Manifest.permission.CAMERA) })
         }
         return
@@ -148,11 +143,15 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                     if (flash.value > 0f) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = flash.value)))
                     // 切れている側の端を色で示す
                     if (lastWarnings != null) EdgeMarks(lastWarnings.cut, c.warn)
-                    StatusChip(
-                        text = ui.cameraError ?: Texts.status(ui.status, justCaptured, ui.pageNumber),
-                        dot = if (justCaptured && lastWarnings != null) Color(0xFFF0B35C) else Color(0xFF7FBDEE),
-                        modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
-                    )
+                    // 出すのは、撮影済みのページ・撮影しない理由・エラーだけ
+                    val chip = ui.cameraError ?: Texts.status(ui.status, ui.pageNumber)
+                    if (chip.isNotEmpty()) {
+                        StatusChip(
+                            text = chip,
+                            dot = if (justCaptured && lastWarnings != null) Color(0xFFF0B35C) else Color(0xFF7FBDEE),
+                            modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                        )
+                    }
                     ui.numbers?.let {
                         Text(
                             it, color = Color.White, fontFamily = FontFamily.Monospace, style = Type.tiny,
@@ -204,19 +203,7 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                 }
             }
         }
-        // 上がったもの・まだのもの
-        val footer = buildString {
-            if (counts.uploadedToday > 0) append("アップロード済み ${counts.uploadedToday}")
-            if (counts.pending > 0) {
-                if (isNotEmpty()) append(" ・ ")
-                append("未アップロード ${counts.pending}")
-            }
-        }
-        Text(
-            footer, style = Type.tiny, color = c.text3,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp).height(18.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-        )
+        Spacer(Modifier.height(10.dp))
     }
 }
 

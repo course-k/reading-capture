@@ -72,16 +72,16 @@ fun AppRoot(container: AppContainer, tab: Tab, onTab: (Tab) -> Unit, overlay: Ov
                     // 上げる状況。押すと設定（鍵・上げる状況）へ
                     val problem = status.problem
                     val (label, color) = when {
-                        problem != null && (counts.pending > 0 || problem.blocksOwner()) -> problemLabel(problem) to c.warn
-                        counts.pending > 0 -> "未アップロード ${counts.pending}" to c.accent
-                        counts.uploadedToday > 0 -> "アップロード済み" to c.text2
+                        problem != null && problem.blocksOwner() -> problemLabel(problem) to c.warn
+                        // 自動で回復する失敗（オフライン・混雑）は件数だけを警告色で出す。理由は設定画面にある
+                        counts.pending > 0 -> "未アップロード ${counts.pending}" to (if (problem != null) c.warn else c.accent)
                         else -> "" to c.text2
                     }
                     if (label.isNotEmpty()) TextAction(label, onClick = { onOverlay(Overlay.SETTINGS) }, color = color, style = Type.small)
                 }
                 TabSwitch(tab, onTab)
                 when (tab) {
-                    Tab.CAPTURE -> CaptureScreen(container, book.id, counts, onOpenPhotos = { onOverlay(Overlay.PHOTOS) })
+                    Tab.CAPTURE -> CaptureScreen(container, book.id, onOpenPhotos = { onOverlay(Overlay.PHOTOS) })
                     Tab.SPEAK -> SpeakScreen(container, book)
                 }
             }
@@ -114,9 +114,7 @@ private fun app.readingcapture.sync.SyncProblem.blocksOwner() = when (this) {
 private fun problemLabel(p: app.readingcapture.sync.SyncProblem) = when (p) {
     app.readingcapture.sync.SyncProblem.NO_KEY -> "トークン未設定"
     app.readingcapture.sync.SyncProblem.BAD_KEY -> "トークンが無効"
-    app.readingcapture.sync.SyncProblem.NO_PERMISSION, app.readingcapture.sync.SyncProblem.NOT_FOUND -> "アップロード不可"
-    app.readingcapture.sync.SyncProblem.OFFLINE -> "オフライン"
-    else -> "リトライ待ち"
+    else -> "アップロード不可"
 }
 
 @Composable
