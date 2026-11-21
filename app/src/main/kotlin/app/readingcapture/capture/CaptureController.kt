@@ -315,12 +315,17 @@ class CaptureController(
                     .getOrDefault(TextLineDetector.GlimpseResult(PageGlimpse(null, hasText = false), 0))
                 val after = SystemClock.elapsedRealtime()
                 val readMotion = gyroSinceFrame.takeIf { it >= 0f }
-                result = engine.onPageGlimpsed(read.glimpse, after, readMotion)
-                val m = result.metrics
-                // 文字のかたまりの範囲（記録するだけ。向きは映像の面のまま）
+                // 文字のかたまりの範囲（向きは映像の面のまま）。縦に持つと、面の縦がページの横に当たる
                 val block = TextBlockFinder.find(frame)
+                val across = block?.let { if (rotation == 90 || rotation == 270) it.bottom - it.top else it.right - it.left }
+                // 番号が読めず、本文がページの横幅の半分も写っていないなら、ページの一部が入っただけ（隣のページへ移す途中）。撮らない。
+                // 実機で、そういうコマを撮った 1 枚は幅の 37%、ふつうに撮れた 12 枚は 80% 以上だった
+                val partial = read.glimpse.pageNumber == null && read.glimpse.hasText && across != null && across < MIN_BLOCK_ACROSS
+                val glimpse = if (partial) read.glimpse.copy(hasText = false) else read.glimpse
+                result = engine.onPageGlimpsed(glimpse, after, readMotion)
+                val m = result.metrics
                 diag.log(
-                    "glimpse", "ms" to after - started, "page" to read.glimpse.pageNumber, "text" to read.glimpse.hasText, "chars" to read.chars,
+                    "glimpse", "ms" to after - started, "page" to read.glimpse.pageNumber, "text" to read.glimpse.hasText, "chars" to read.chars, "across" to across, "partial" to partial,
                     "status" to result.status.name, "request" to result.request?.reason?.name, "next" to result.need.name,
                     "cell" to m.cellFraction, "cmax" to m.cellMax, "gyro" to m.deviceMotion, "readGyro" to readMotion, "sharp" to m.sharpness,
                     "rot" to rotation, "block" to block?.let { "%.3f,%.3f,%.3f,%.3f".format(it.left, it.top, it.right, it.bottom) },
@@ -497,6 +502,9 @@ class CaptureController(
 
     companion object {
         const val WORK_LONG_SIDE = 320
+
+        /** 番号が読めないとき、本文がページの横幅のこの割合より狭ければ撮らない */
+        const val MIN_BLOCK_ACROSS = 0.5f
         const val REFERENCE_MAX_AGE_MS = 30 * 60_000L
 
         /** 写真の id。時刻順に並ぶ。 */

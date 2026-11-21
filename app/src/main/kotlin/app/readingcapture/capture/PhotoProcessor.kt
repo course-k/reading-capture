@@ -135,7 +135,9 @@ class PhotoProcessor(
         val readNumber = lastPageNumber
         val pageNumber = hintNumber ?: readNumber
         lastBoxes?.let { (b, w, h) -> logBoxes(id, b, w, h, cut) }
-        val warnings = judge.judge(measure, cut, moved)
+        // 見切れは警告に含めない（記録だけ残す）。手持ちでは行が傾いて写り、行の枠が縦に伸びて端にかかるので、
+        // 実機で 13 枚中 6 枚に出て、確かめられたものは誤りだった（下が見切れと出た写真で、下のページ番号は読めていた）
+        val warnings = judge.judge(measure, EdgeCutResult(emptySet()), moved)
         onInspected?.invoke(id, readNumber, !warnings.blurred)
 
         // 仕上げたものを保存する。書き終えてから名前を付け替えるので、途中で落ちても半端なファイルは残らない
