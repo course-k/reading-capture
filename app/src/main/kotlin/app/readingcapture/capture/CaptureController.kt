@@ -23,6 +23,8 @@ import app.readingcapture.core.detect.CaptureRequest
 import app.readingcapture.core.detect.EngineStatus
 import app.readingcapture.core.detect.FrameResult
 import app.readingcapture.core.detect.PageFingerprint
+import app.readingcapture.core.detect.PageGlimpse
+import app.readingcapture.core.detect.PageNeed
 import app.readingcapture.core.frame.LumaImage
 import app.readingcapture.core.inbox.InboxLayout
 import app.readingcapture.core.inbox.PhotoKind
@@ -55,6 +57,8 @@ data class CaptureUi(
     val capturedAtMs: Long = 0,
     val hasTorch: Boolean = false,
     val torchOn: Boolean = false,
+    /** いまの状態に関わるページ番号（撮ったページ、もう撮ってあったページ）。読めていなければ null */
+    val pageNumber: Int? = null,
     /** 合わせ込み用の数値（設定で出すことにしたときだけ） */
     val numbers: String? = null,
 )
@@ -120,7 +124,7 @@ class CaptureController(
     private var lastNumbersAt = 0L
     private var bound = false
 
-    private val referenceFile = java.io.File(context.filesDir, "capture/pages.bin")
+    private val referenceFile = java.io.File(context.filesDir, "capture/pages-v2.bin")
 
     init {
         // カメラが保存したのに台帳に載る前に落ちた写真を拾う
@@ -142,11 +146,20 @@ class CaptureController(
         }
         // アプリを開き直しても同じページを二度撮りしないよう、最後に撮ったページを思い出す（30 分以内のものだけ）
         analysisExecutor.execute { restoreReference() }
-        // 写真からページ全体の指紋が読めたら、覚えているページを補う
-        processor.onPageRead = { photoId, fingerprint ->
+        // 写真からページ全体の文字と番号が読めたら、前に撮ったページと同じでないかを見る。同じなら、その 1 枚は捨てる
+        processor.onPageRead = { photoId, fingerprint, pageNumber ->
             analysisExecutor.execute {
-                requestIds.remove(photoId)?.let {
-                    engine.enrichReference(it, fingerprint)
+                val requestId = requestIds.remove(photoId)
+                if (requestId != null) {
+                    val duplicate = engine.onPhotoRead(requestId, fingerprint, pageNumber)
+                    if (duplicate) {
+                        db.photo(photoId)?.let { photo ->
+                            val fileName = db.deletePhoto(photo.id)
+                            store.deleteAll(photo.id, fileName ?: photo.fileName)
+                            sync.kick()
+                        }
+                    }
+                    diag.log("photo_read", "id" to photoId, "page" to pageNumber, "hashes" to fingerprint?.hashes?.size, "duplicate" to duplicate)
                     saveReference()
                 }
             }
@@ -296,21 +309,37 @@ class CaptureController(
             if (motion != null) gyroSinceFrame = 0f
             probe(frame, now)
             var result = engine.onFrame(frame, now, motion)
-            if (result.needsPageCheck) {
-                // 止まった。このコマのまん中の文字を読んで、どのページかを見分ける
-                val fingerprint = runCatching { pageReader.fingerprintOfCenter(scratch, w, h, rowStride, proxy.imageInfo.rotationDegrees) }
-                    .onFailure { diag.log("read_error", "error" to it.toString()) }
-                    .getOrDefault(PageFingerprint.of(emptyList()))
-                val after = SystemClock.elapsedRealtime()
+            var rounds = 0
+            while (result.need != PageNeed.NONE && rounds++ < 3) {
+                val rotation = proxy.imageInfo.rotationDegrees
+                val started = SystemClock.elapsedRealtime()
+                if (result.need == PageNeed.GLIMPSE) {
+                    // 止まった。ページ番号のあたりだけを読む
+                    val read = runCatching { pageReader.glimpse(scratch, w, h, rowStride, rotation) }
+                        .onFailure { diag.log("read_error", "error" to it.toString()) }
+                        .getOrDefault(TextLineDetector.GlimpseResult(PageGlimpse(null, hasText = false), 0))
+                    val after = SystemClock.elapsedRealtime()
+                    result = engine.onPageGlimpsed(read.glimpse, after)
+                    val m = result.metrics
+                    diag.log(
+                        "glimpse", "ms" to after - started, "page" to read.glimpse.pageNumber, "text" to read.glimpse.hasText, "chars" to read.chars,
+                        "status" to result.status.name, "request" to result.request?.reason?.name, "next" to result.need.name,
+                        "cell" to m.cellFraction, "cmax" to m.cellMax, "gyro" to m.deviceMotion, "sharp" to m.sharpness,
+                    )
+                } else {
+                    // 番号は「もう撮った番号」だった。読み違いでないか、まん中の文字で確かめる
+                    val fingerprint = runCatching { pageReader.fingerprintOfCenter(scratch, w, h, rowStride, rotation) }
+                        .onFailure { diag.log("read_error", "error" to it.toString()) }
+                        .getOrDefault(PageFingerprint.of(emptyList()))
+                    val after = SystemClock.elapsedRealtime()
+                    result = engine.onPageObserved(fingerprint, after)
+                    diag.log(
+                        "check", "ms" to after - started, "chars" to fingerprint.charCount, "hashes" to fingerprint.hashes.size,
+                        "sim" to result.metrics.similarity, "status" to result.status.name, "request" to result.request?.reason?.name,
+                    )
+                }
                 // 読んでいるあいだの動きは、次のコマとの比較に持ち込まない（読み終えてからの動きだけを見る）
                 if (gyroSinceFrame >= 0f) gyroSinceFrame = 0f
-                result = engine.onPageObserved(fingerprint, after)
-                val m = result.metrics
-                diag.log(
-                    "check", "ms" to after - now, "lines" to fingerprint.lineCount, "chars" to fingerprint.charCount, "hashes" to fingerprint.hashes.size,
-                    "sim" to m.similarity, "status" to result.status.name, "request" to result.request?.reason?.name,
-                    "cell" to m.cellFraction, "cmax" to m.cellMax, "gyro" to m.deviceMotion, "sharp" to m.sharpness,
-                )
             }
             result.request?.let { takePicture(it) }
             publish(result, now)
@@ -360,14 +389,13 @@ class CaptureController(
             lastNumbersAt = now
             "映像 %.3f / %.0f  スマホ %.2f  鮮明さ %.0f".format(m.cellFraction, m.cellMax, m.deviceMotion ?: -1f, m.sharpness)
         } else if (!showNumbers) null else current.numbers
-        if (result.status != current.status || abs(result.settleProgress - lastPublishedProgress) > 0.04f || numbers != current.numbers) {
-            lastPublishedProgress = result.settleProgress
-            _ui.update { it.copy(status = result.status, settleProgress = result.settleProgress, numbers = numbers) }
+        if (result.status != current.status || result.pageNumber != current.pageNumber || numbers != current.numbers) {
+            _ui.update { it.copy(status = result.status, settleProgress = result.settleProgress, pageNumber = result.pageNumber, numbers = numbers) }
         }
     }
 
     /**
-     * 最近撮ったページの指紋（数値の集まり。文字ではない）を書いておく。
+     * 最近撮ったページの覚え（ページ番号と、指紋の数値。文字ではない）を書いておく。
      * アプリを開き直しても、同じページを二度撮りしないため。
      */
     private fun saveReference() {
@@ -377,9 +405,10 @@ class CaptureController(
             java.io.DataOutputStream(referenceFile.outputStream().buffered()).use { out ->
                 out.writeLong(System.currentTimeMillis())
                 out.writeInt(pages.size)
-                for (p in pages) {
-                    out.writeInt(p.size)
-                    for (v in p) out.writeInt(v)
+                for ((number, hashes) in pages) {
+                    out.writeInt(number)
+                    out.writeInt(hashes.size)
+                    for (v in hashes) out.writeInt(v)
                 }
             }
         }
@@ -392,12 +421,13 @@ class CaptureController(
                 val savedAt = input.readLong()
                 if (System.currentTimeMillis() - savedAt > REFERENCE_MAX_AGE_MS) return
                 val count = input.readInt()
-                if (count !in 0..32) return
-                val pages = ArrayList<IntArray>()
+                if (count !in 0..64) return
+                val pages = ArrayList<Pair<Int, IntArray>>()
                 repeat(count) {
+                    val number = input.readInt()
                     val n = input.readInt()
                     if (n !in 0..20000) return
-                    pages += IntArray(n) { input.readInt() }
+                    pages += number to IntArray(n) { input.readInt() }
                 }
                 engine.restorePages(pages)
             }

@@ -9,14 +9,12 @@ import android.os.VibratorManager
  * 振動の使い分け。スマホは台に置いたままなので、手に持たなくても違いが分かるよう、
  * 回数と長さで分ける。
  *
- * - 撮れた: 短く 1 回
- * - 切れ・ぶれ・暗い: 長めに 2 回
- * - 消した・残した: ごく軽く 1 回
+ * - 撮れた: ブルッと 1 回（0.2 秒）
+ * - 切れ・ぶれ・暗い: ブルッ、ブルッと長めに 2 回（0.3 秒ずつ）
+ * - 消した・残した: ごく短く 1 回
  *
- * 公式の手引きは、決まった型（createPredefined）を勧めている。未対応の端末でも代わりの型に落ちる。
- * 知らせの 2 回は、撮れたときとはっきり違う必要があるので、長さを指定した波形にしている
- * （手引きが「とても大事な知らせに限って」としている使い方）。
- * https://developer.android.com/develop/ui/views/haptics/haptics-apis （2026-11-20 に確認）
+ * 最初は、キーを押したときと同じ種類の軽い振動（決まった型）にしていたが、
+ * 持ち主が思っていた「バイブ」ではなかった（2026-11-21）。長さを指定した振動にしている。
  */
 class Haptics(context: Context) {
 
@@ -36,21 +34,21 @@ class Haptics(context: Context) {
 
     /** 撮れた。@return 振動が続く時間の目安（このあいだの映像の揺れは、めくった動きとして数えない） */
     fun captured(): Long {
-        vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK), attributes)
-        return 120
+        vibrator.vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE), attributes)
+        return 200
     }
 
     /** 切れ・ぶれ・暗い。 */
     fun warning(): Long {
-        val timings = longArrayOf(0, 110, 130, 110)
+        val timings = longArrayOf(0, 300, 180, 300)
         val amplitudes = intArrayOf(0, 255, 0, 255)
         vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1), attributes)
-        return 450
+        return 780
     }
 
     /** 消した・残した・節を変えた。 */
     fun tick(): Long {
-        vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK), attributes)
-        return 60
+        vibrator.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE), attributes)
+        return 40
     }
 }

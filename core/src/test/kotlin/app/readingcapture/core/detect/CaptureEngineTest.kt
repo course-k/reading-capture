@@ -175,7 +175,8 @@ class CaptureEngineTest {
         script.hold(SceneState(pages[1]), 2500)
         val sim = run(script)
         assertEquals(describe(sim), listOf<Int?>(1, 2), sim.captures.pageIds())
-        assertEquals("ぼけているうちに撮った", 0, sim.captures[1].blurRadius)
+        // 手に持つ前提では、合うのを長くは待たない。はっきりぼけているうち（半径 2 以上）には撮らないこと
+        assertTrue("ぼけているうちに撮った: ${sim.captures[1]}", sim.captures[1].blurRadius <= 1)
     }
 
     @Test
@@ -463,8 +464,9 @@ class CaptureEngineTest {
         script.hold(SceneState(pages[0]), 20000)
         val sim = run(script)
         assertEquals(describe(sim), listOf<Int?>(1), sim.captures.pageIds())
-        // 20 秒で、撮る前の 1 回と、保険の見分け直し（2.5 秒おき）だけ
-        assertTrue("文字認識 ${sim.pageChecks} 回", sim.pageChecks <= 10)
+        // 20 秒で、撮る前の 1 回と、保険の見直し（3 秒おき、番号だけ）
+        assertTrue("番号を読んだ回数 ${sim.glimpses}", sim.glimpses <= 9)
+        assertTrue("まん中の文字を読んだ回数 ${sim.pageChecks}", sim.pageChecks <= 1)
     }
 
     @Test
@@ -495,20 +497,19 @@ class CaptureEngineTest {
     }
 
     @Test
-    fun `文字を読むのに時間がかかっても、輪が戻らずに撮る`() {
-        // 実機で、ページ全体を読むのに 0.6〜1.5 秒かかり、そのあとのコマを「大きく動いた」と数えて、
-        // 待ちを最初からやり直し続けていた（「そのまま」と出て輪が一周しない）
+    fun `文字を読むのに時間がかかっても、待ちをやり直さずに撮る`() {
+        // 実機で、文字を読むのに 0.6〜1.5 秒かかり、そのあとのコマを「大きく動いた」と数えて、
+        // 待ちを最初からやり直し続けていた
         val script = VideoScript()
         script.hold(SceneState(pages[0]), 6000)
         script.turn(pages[0], pages[1])
         val turned = script.durationMs
         script.hold(SceneState(pages[1]), 6000)
-        val sim = Simulation(CaptureEngine(), readLatencyMs = 900)
+        val sim = Simulation(CaptureEngine(), glimpseLatencyMs = 900, readLatencyMs = 1200)
         sim.run(script)
         assertEquals(describe(sim), listOf<Int?>(1, 2), sim.captures.pageIds())
-        assertTrue("最初の 1 枚まで ${sim.captures[0].timeMs}ms", sim.captures[0].timeMs < 3500)
-        assertTrue("めくってから ${sim.captures[1].timeMs - turned}ms", sim.captures[1].timeMs - turned < 3000)
-        assertTrue("文字認識 ${sim.pageChecks} 回", sim.pageChecks <= 12)
+        assertTrue("最初の 1 枚まで ${sim.captures[0].timeMs}ms", sim.captures[0].timeMs < 3000)
+        assertTrue("めくってから ${sim.captures[1].timeMs - turned}ms", sim.captures[1].timeMs - turned < 2500)
     }
 
     @Test
@@ -519,8 +520,74 @@ class CaptureEngineTest {
         script.animate(500) { t -> SceneState(pages[0], dy = 150f * t, gyro = 0.6f) }
         script.hold(SceneState(pages[0], dy = 150f), 3000)
         script.animate(500) { t -> SceneState(pages[0], dy = 150f - 300f * t, gyro = 0.6f) }
-        script.hold(SceneState(pages[0], dy = -150f), 3000)
+        // 番号が読めなかったときは先に撮るので、写真の仕上げ（同じページと分かって捨てる）が済むまで流す
+        script.hold(SceneState(pages[0], dy = -150f), 5000)
         val sim = run(script)
         assertEquals(describe(sim), listOf<Int?>(1), sim.captures.pageIds())
+    }
+
+    @Test
+    fun `止めてから 1 秒以内に撮る`() {
+        // 持ち主: 「撮るまでの時間がちょっとかかりすぎています」。番号だけ読む方式で、止めてからすぐ撮る
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 3000)
+        for (i in 1 until 5) {
+            script.turn(pages[i - 1], pages[i])
+            script.hold(SceneState(pages[i]), 3000)
+        }
+        val sim = run(script)
+        assertEquals(describe(sim), listOf<Int?>(1, 2, 3, 4, 5), sim.captures.pageIds())
+        // 台本では、めくり終わりから 250ms かけて反りが戻る。そこから数える
+        var t = 3000
+        for (i in 1 until 5) {
+            t += 300 + 900 + 350 + 250
+            val waited = sim.captures[i].timeMs - t
+            assertTrue("${i + 1} 枚目: 止めてから ${waited}ms", waited < 1000)
+            t += 3000
+        }
+        assertEquals("ふつうにめくるだけなら、時間のかかる読み方（まん中の文字）は使わない", 0, sim.pageChecks)
+    }
+
+    @Test
+    fun `ページ番号の無いページも撮り、同じページに戻って撮った分は、あとで捨てる`() {
+        val plain = (0 until 3).map { SyntheticPage(800 + it, options = PageOptions(pageNumber = false)) }
+        val script = VideoScript()
+        script.hold(SceneState(plain[0]), 3500)
+        script.turn(plain[0], plain[1])
+        script.hold(SceneState(plain[1]), 3500)
+        // スマホを離して、同じページに戻る。番号が無いので、もう一度撮ってしまうが、写真の文字で同じと分かって捨てる
+        script.animate(700) { t -> SceneState(plain[1], dx = 200f * kotlin.math.sin(t * 3.14f), gyro = 1.2f) }
+        script.hold(SceneState(plain[1], dx = 8f), 4000)
+        script.turn(plain[1], plain[2])
+        script.hold(SceneState(plain[2]), 3500)
+        val sim = run(script)
+        assertEquals(describe(sim), listOf<Int?>(800, 801, 802), sim.captures.pageIds())
+        assertEquals("同じページをもう一度撮った分を捨てた枚数", 1, sim.discarded)
+    }
+
+    @Test
+    fun `ページ番号を、もう撮った番号に読み違えても、撮り逃さない`() {
+        // 15 を 13 と読むような読み違い。番号だけを信じると、新しいページを撮らずに飛ばしてしまう。
+        // もう撮った番号に見えたときは、文字でも確かめる
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 4000)
+        script.turn(pages[0], pages[1])
+        script.hold(SceneState(pages[1]), 4000)
+        val sim = run(script) { misreadNumber = { 1 } }
+        assertEquals(describe(sim), listOf<Int?>(1, 2), sim.captures.pageIds())
+        assertTrue("文字で確かめた回数 ${sim.pageChecks}", sim.pageChecks >= 1)
+    }
+
+    @Test
+    fun `ページ番号が毎回読めなくても、二度撮りも撮り逃しも残らない`() {
+        val script = VideoScript()
+        script.hold(SceneState(pages[0]), 3500)
+        for (i in 1 until 6) {
+            script.turn(pages[i - 1], pages[i])
+            script.hold(SceneState(pages[i]), 3500)
+        }
+        val sim = Simulation(CaptureEngine(), numberMiss = 0.6)
+        sim.run(script)
+        assertEquals(describe(sim), listOf<Int?>(1, 2, 3, 4, 5, 6), sim.captures.pageIds())
     }
 }

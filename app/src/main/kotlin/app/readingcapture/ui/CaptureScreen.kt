@@ -8,7 +8,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,11 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -56,7 +51,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.readingcapture.AppContainer
-import app.readingcapture.core.detect.EngineStatus
 import app.readingcapture.core.inbox.PhotoKind
 import app.readingcapture.core.quality.Side
 import app.readingcapture.data.Photo
@@ -154,12 +148,8 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                     if (flash.value > 0f) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = flash.value)))
                     // 切れている側の端を色で示す
                     if (lastWarnings != null) EdgeMarks(lastWarnings.cut, c.warn)
-                    // 輪は、止まり始めてしばらくしてから出す（手ぶれのたびに出たり消えたりさせない）
-                    if ((ui.status == EngineStatus.SETTLING && ui.settleProgress >= 0.6f) || ui.status == EngineStatus.CAPTURING) {
-                        SettleRing(ui.settleProgress, Modifier.align(Alignment.Center))
-                    }
                     StatusChip(
-                        text = ui.cameraError ?: Texts.status(ui.status, justCaptured),
+                        text = ui.cameraError ?: Texts.status(ui.status, justCaptured, ui.pageNumber),
                         dot = if (justCaptured && lastWarnings != null) Color(0xFFF0B35C) else Color(0xFF7FBDEE),
                         modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
                     )
@@ -258,18 +248,6 @@ private fun StatusChip(text: String, dot: Color, modifier: Modifier = Modifier) 
         Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
         Spacer(Modifier.width(7.dp))
         Text(text, style = Type.small, color = Color.White)
-    }
-}
-
-/** 止まってから撮るまでの輪。一周したら撮る。 */
-@Composable
-private fun SettleRing(progress: Float, modifier: Modifier = Modifier) {
-    Canvas(modifier.size(64.dp)) {
-        val stroke = 4.dp.toPx()
-        val inset = stroke / 2
-        val arcSize = Size(size.width - stroke, size.height - stroke)
-        drawArc(Color(0x40FFFFFF), 0f, 360f, false, Offset(inset, inset), arcSize, style = Stroke(stroke))
-        drawArc(Color(0xFF7FBDEE), -90f, 360f * progress.coerceIn(0f, 1f), false, Offset(inset, inset), arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
     }
 }
 

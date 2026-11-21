@@ -12,12 +12,16 @@ import java.time.format.DateTimeFormatter
 /** 画面の言葉。短く、次にすることが分かる一言にする。 */
 object Texts {
 
-    fun status(status: EngineStatus, justCaptured: Boolean): String = when (status) {
+    fun status(status: EngineStatus, justCaptured: Boolean, pageNumber: Int?): String = when (status) {
         EngineStatus.STARTING -> "準備しています"
         // 動いている・止まりかけている、は同じ言葉にする（手に持つと行き来するので、言葉が変わるとちらつく）
         EngineStatus.MOVING, EngineStatus.SETTLING -> "ページに向けて止めると、撮ります"
         EngineStatus.CAPTURING -> "撮っています"
-        EngineStatus.WAITING_NEXT_PAGE -> if (justCaptured) "撮りました。めくってください" else "次のページを待っています"
+        EngineStatus.WAITING_NEXT_PAGE -> when {
+            pageNumber != null -> "$pageNumber ページは撮りました。次のページへ"
+            justCaptured -> "撮りました。次のページへ"
+            else -> "次のページを待っています"
+        }
         EngineStatus.NOT_A_PAGE -> "ページを映してください"
     }
 

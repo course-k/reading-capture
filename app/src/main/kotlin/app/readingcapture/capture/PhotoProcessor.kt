@@ -43,6 +43,7 @@ class PhotoProcessor(
     private val judge = QualityJudge()
     private var lastBoxes: Triple<List<app.readingcapture.core.quality.TextBox>, Int, Int>? = null
     private var lastFingerprint: app.readingcapture.core.detect.PageFingerprint? = null
+    private var lastPageNumber: Int? = null
 
     /** 点検で知らせることが見つかったときに呼ぶ（仕上げのスレッドから）。 */
     var onWarning: ((photoId: String, warnings: PhotoWarnings) -> Unit)? = null
@@ -50,8 +51,8 @@ class PhotoProcessor(
     /** 台帳に載っていない写真を台帳に載せる。載せられたら true を返す。 */
     var adoptOrphan: ((photoId: String) -> Boolean?)? = null
 
-    /** 写真からページ全体の指紋が読めたときに呼ぶ（仕上げのスレッドから）。 */
-    var onPageRead: ((photoId: String, fingerprint: app.readingcapture.core.detect.PageFingerprint) -> Unit)? = null
+    /** 写真からページ全体の指紋とページ番号が読めたときに呼ぶ（仕上げのスレッドから）。 */
+    var onPageRead: ((photoId: String, fingerprint: app.readingcapture.core.detect.PageFingerprint?, pageNumber: Int?) -> Unit)? = null
 
     /** 1 枚の仕上げが済むたびに呼ぶ。 */
     var onProcessed: (() -> Unit)? = null
@@ -124,8 +125,9 @@ class PhotoProcessor(
         val measure = measure(inspect)
         lastBoxes = null
         lastFingerprint = null
+        lastPageNumber = null
         val (cut, lineCount) = detectCut(inspect)
-        lastFingerprint?.let { onPageRead?.invoke(id, it) }
+        onPageRead?.invoke(id, lastFingerprint, lastPageNumber)
         lastBoxes?.let { (b, w, h) -> logBoxes(id, b, w, h, cut) }
         val warnings = judge.judge(measure, cut, moved)
 
@@ -154,7 +156,7 @@ class PhotoProcessor(
         diag.log(
             "photo", "id" to id, "w" to width, "h" to height, "bytes" to target.length(), "rawBytes" to row.bytes,
             "sharp" to measure.sharpness, "sharpX" to measure.sharpnessX, "sharpY" to measure.sharpnessY, "paper" to measure.paperLuma,
-            "lines" to lineCount, "cut" to cut.sides.joinToString(",") { it.name }, "moved" to moved,
+            "lines" to lineCount, "page" to lastPageNumber, "cut" to cut.sides.joinToString(",") { it.name }, "moved" to moved,
             "blur" to warnings.blurred, "dark" to warnings.dark, "ms" to System.currentTimeMillis() - started,
         )
         // 持ち主がそのあいだに消していなければ知らせる
@@ -178,7 +180,7 @@ class PhotoProcessor(
      * 合わせ込み用: 端末に残っている仕上げ済みの写真について、文字の行の枠の並び（位置と大きさの数値だけ）を記録する。
      * 切れの判定が外れたときに、どういう並びで外れたかを調べるのに使う。文字そのものは記録しない。
      */
-    fun reinspect(limit: Int = 6) {
+    fun reinspect(limit: Int = 40) {
         executor.execute {
             for (p in db.photosInState(PhotoState.READY).takeLast(limit)) {
                 val file = p.fileName?.let { store.photoFile(it) } ?: continue
@@ -187,8 +189,16 @@ class PhotoProcessor(
                     val source = BitmapFactory.decodeFile(file.path) ?: return@runCatching
                     val scale = INSPECT_LONG_SIDE.toFloat() / max(source.width, source.height)
                     val bitmap = if (scale < 1f) Bitmap.createScaledBitmap(source, (source.width * scale).roundToInt(), (source.height * scale).roundToInt(), true) else source
-                    val boxes = lines.detect(bitmap)
+                    val reading = lines.read(bitmap)
+                    val boxes = reading.boxes
                     logBoxes(p.id, boxes, bitmap.width, bitmap.height, EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height))
+                    // 数字だけの短い語（ページ番号の候補）。値、位置、その行の文字数。選ばれたページ番号
+                    diag.log(
+                        "numbers", "id" to p.id, "w" to bitmap.width, "h" to bitmap.height, "at" to p.capturedAt, "page" to reading.pageNumber,
+                        "n" to reading.numbers.joinToString(";") { m ->
+                            "${m.value}@${m.box.left.roundToInt()},${m.box.top.roundToInt()},${m.box.right.roundToInt()},${m.box.bottom.roundToInt()}/${m.lineChars}"
+                        },
+                    )
                     if (bitmap !== source) bitmap.recycle()
                     source.recycle()
                 }.onFailure { diag.log("reinspect_error", "id" to p.id, "error" to it.toString()) }
@@ -206,6 +216,7 @@ class PhotoProcessor(
     private fun detectCut(bitmap: Bitmap): Pair<EdgeCutResult, Int> = try {
         val reading = lines.read(bitmap)
         lastFingerprint = reading.fingerprint
+        lastPageNumber = reading.pageNumber
         val boxes = reading.boxes
         val result = EdgeCutCheck.evaluate(boxes, bitmap.width, bitmap.height)
         // 知らせを出すときは、行の枠の並び（数値だけ）を残しておく。外れていたときに調べられるように
