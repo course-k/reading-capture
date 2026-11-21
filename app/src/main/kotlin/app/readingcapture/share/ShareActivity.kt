@@ -43,7 +43,7 @@ class ShareActivity : Activity() {
             else -> emptyList()
         }
         if (uris.isEmpty()) {
-            Toast.makeText(this, "受け取れる画像がありませんでした", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "追加できる画像がありません", Toast.LENGTH_SHORT).show()
             finish()
             return
         }
@@ -60,10 +60,10 @@ class ShareActivity : Activity() {
             container.sync.kick()
             runOnUiThread {
                 val text = when {
-                    saved == 0 -> "受け取れませんでした"
-                    saved < uris.size -> "${uris.size} 枚のうち $saved 枚を受け取りました。残りは受け取れませんでした"
-                    bookTitle != null -> "$saved 枚を受け取りました（$bookTitle）"
-                    else -> "$saved 枚を受け取りました"
+                    saved == 0 -> "画像を追加できませんでした"
+                    saved < uris.size -> "${uris.size} 枚中 $saved 枚を追加しました（残りは読み込めませんでした）"
+                    bookTitle != null -> "$saved 枚を追加しました（$bookTitle）"
+                    else -> "$saved 枚を追加しました"
                 }
                 Toast.makeText(applicationContext, text, Toast.LENGTH_SHORT).show()
                 finish()

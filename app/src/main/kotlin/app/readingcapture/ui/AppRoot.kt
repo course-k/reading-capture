@@ -73,8 +73,8 @@ fun AppRoot(container: AppContainer, tab: Tab, onTab: (Tab) -> Unit, overlay: Ov
                     val problem = status.problem
                     val (label, color) = when {
                         problem != null && (counts.pending > 0 || problem.blocksOwner()) -> problemLabel(problem) to c.warn
-                        counts.pending > 0 -> "まだ ${counts.pending}" to c.accent
-                        counts.uploadedToday > 0 -> "上げ終わり" to c.text2
+                        counts.pending > 0 -> "未アップロード ${counts.pending}" to c.accent
+                        counts.uploadedToday > 0 -> "アップロード済み" to c.text2
                         else -> "" to c.text2
                     }
                     if (label.isNotEmpty()) TextAction(label, onClick = { onOverlay(Overlay.SETTINGS) }, color = color, style = Type.small)
@@ -112,18 +112,18 @@ private fun app.readingcapture.sync.SyncProblem.blocksOwner() = when (this) {
 }
 
 private fun problemLabel(p: app.readingcapture.sync.SyncProblem) = when (p) {
-    app.readingcapture.sync.SyncProblem.NO_KEY -> "鍵がまだ"
-    app.readingcapture.sync.SyncProblem.BAD_KEY -> "鍵が無効"
-    app.readingcapture.sync.SyncProblem.NO_PERMISSION, app.readingcapture.sync.SyncProblem.NOT_FOUND -> "上げられません"
-    app.readingcapture.sync.SyncProblem.OFFLINE -> "つながり待ち"
-    else -> "少し待っています"
+    app.readingcapture.sync.SyncProblem.NO_KEY -> "トークン未設定"
+    app.readingcapture.sync.SyncProblem.BAD_KEY -> "トークンが無効"
+    app.readingcapture.sync.SyncProblem.NO_PERMISSION, app.readingcapture.sync.SyncProblem.NOT_FOUND -> "アップロード不可"
+    app.readingcapture.sync.SyncProblem.OFFLINE -> "オフライン"
+    else -> "リトライ待ち"
 }
 
 @Composable
 private fun TabSwitch(tab: Tab, onTab: (Tab) -> Unit) {
     val c = LocalColors.current
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp).clip(RoundedCornerShape(14.dp)).background(c.sunken).padding(3.dp)) {
-        for ((t, label) in listOf(Tab.CAPTURE to "撮る", Tab.SPEAK to "話す")) {
+        for ((t, label) in listOf(Tab.CAPTURE to "撮影", Tab.SPEAK to "メモ")) {
             val on = tab == t
             Box(
                 Modifier.weight(1f)

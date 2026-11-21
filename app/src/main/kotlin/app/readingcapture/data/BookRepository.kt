@@ -92,6 +92,6 @@ class BookRepository(context: Context, private val settings: Settings) {
     companion object {
         /** 本を選ぶ前に撮った写真の入れ先。取り込み箱の `books/unsorted/` に入る。 */
         const val UNSORTED_ID = "unsorted"
-        val UNSORTED = BookEntry(UNSORTED_ID, "本を選んでいません")
+        val UNSORTED = BookEntry(UNSORTED_ID, "本が未選択")
     }
 }

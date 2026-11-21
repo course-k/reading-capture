@@ -78,11 +78,11 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
 
     if (!granted) {
         Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("ページを撮るために、カメラを使います", style = Type.bodyStrong, color = c.text)
+            Text("ページを撮影するには、カメラへのアクセスを許可してください", style = Type.bodyStrong, color = c.text)
             Spacer(Modifier.height(8.dp))
-            Text("写真は、このスマホの中と、あなたの取り込み箱にだけ置きます。", style = Type.small, color = c.text2)
+            Text("写真は、端末内と自分の GitHub リポジトリにのみ保存されます。", style = Type.small, color = c.text2)
             Spacer(Modifier.height(24.dp))
-            PrimaryButton("カメラを使えるようにする", onClick = { launcher.launch(Manifest.permission.CAMERA) })
+            PrimaryButton("カメラへのアクセスを許可", onClick = { launcher.launch(Manifest.permission.CAMERA) })
         }
         return
     }
@@ -185,7 +185,7 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                         LastThumb(container, last, summary.count, warned = lastWarnings != null, onClick = onOpenPhotos)
                         if (last != null && last.kind == PhotoKind.CAMERA) {
-                            TextAction("消す", onClick = {
+                            TextAction("削除", onClick = {
                                 lastRemoveAt = SystemClock.elapsedRealtime()
                                 container.capture.deleteLast(last)
                             }, modifier = Modifier.padding(start = 6.dp), enabled = !removeLocked)
@@ -195,7 +195,7 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
                     Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                         if (ui.hasTorch) {
                             TextAction(
-                                if (ui.torchOn) "ライト 入" else "ライト",
+                                if (ui.torchOn) "ライト ON" else "ライト",
                                 onClick = { container.capture.toggleTorch() },
                                 color = if (ui.torchOn) c.accent else c.text2,
                             )
@@ -206,10 +206,10 @@ fun CaptureScreen(container: AppContainer, bookId: String, counts: SyncCounts, o
         }
         // 上がったもの・まだのもの
         val footer = buildString {
-            if (counts.uploadedToday > 0) append("上げた ${counts.uploadedToday}")
+            if (counts.uploadedToday > 0) append("アップロード済み ${counts.uploadedToday}")
             if (counts.pending > 0) {
                 if (isNotEmpty()) append(" ・ ")
-                append("まだ ${counts.pending}")
+                append("未アップロード ${counts.pending}")
             }
         }
         Text(
@@ -272,7 +272,7 @@ private fun LastThumb(container: AppContainer, last: Photo?, count: Int, warned:
             Modifier.size(width = 48.dp, height = 64.dp).clip(RoundedCornerShape(6.dp)).background(c.sunken)
                 .border(if (warned) 2.dp else 1.dp, if (warned) c.warn else c.line, RoundedCornerShape(6.dp)),
         ) {
-            image?.let { Image(it, contentDescription = "直前の 1 枚", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+            image?.let { Image(it, contentDescription = "直前の写真", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
         }
         if (count > 0) {
             Box(

@@ -74,14 +74,14 @@ fun BookSheet(container: AppContainer, currentBookId: String, onDismiss: () -> U
     var message by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.bg) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)) {
-            Text("本を選ぶ", style = Type.labelStrong, color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp))
+            Text("本を選択", style = Type.labelStrong, color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp))
             if (books.isEmpty()) {
                 Text(
-                    if (container.vault.hasToken) "取り込み箱に、まだ本がありません。" else "取り込み箱の鍵を入れると、本が出ます。",
+                    if (container.vault.hasToken) "リポジトリに本が登録されていません。" else "アクセストークンを設定すると、本の一覧が表示されます。",
                     style = Type.body, color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp),
                 )
                 Text(
-                    "新しい本は、Claude に本の名前を伝えると、目次と一緒にここへ出るようになります。",
+                    "本を追加するには、Claude に書名を伝えてください。目次と一緒に登録されます。",
                     style = Type.small, color = c.text2, modifier = Modifier.padding(horizontal = 22.dp),
                 )
             }
@@ -90,12 +90,12 @@ fun BookSheet(container: AppContainer, currentBookId: String, onDismiss: () -> U
             }
             Box(Modifier.height(10.dp))
             message?.let { Text(it, style = Type.small, color = c.text2, modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp)) }
-            ListRow("本の一覧を読み直す") {
-                message = "読み直しています"
+            ListRow("本の一覧を再読み込み") {
+                message = "読み込み中…"
                 container.refreshBooks(force = true) { result ->
                     message = result.fold(
-                        onSuccess = { if (it) "新しくなりました" else "変わりはありません" },
-                        onFailure = { "読み直せませんでした。つながっているか、鍵を確かめてください" },
+                        onSuccess = { if (it) "更新しました" else "変更はありません" },
+                        onFailure = { "読み込みに失敗しました。ネットワーク接続とトークンを確認してください" },
                     )
                 }
             }

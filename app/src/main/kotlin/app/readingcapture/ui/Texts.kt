@@ -13,16 +13,16 @@ import java.time.format.DateTimeFormatter
 object Texts {
 
     fun status(status: EngineStatus, justCaptured: Boolean, pageNumber: Int?): String = when (status) {
-        EngineStatus.STARTING -> "準備しています"
+        EngineStatus.STARTING -> "カメラを準備中"
         // 動いている・止まりかけている、は同じ言葉にする（手に持つと行き来するので、言葉が変わるとちらつく）
-        EngineStatus.MOVING, EngineStatus.SETTLING -> "ページに向けて止めると、撮ります"
-        EngineStatus.CAPTURING -> "撮っています"
+        EngineStatus.MOVING, EngineStatus.SETTLING -> "ページに向けて静止すると自動で撮影します"
+        EngineStatus.CAPTURING -> "撮影中"
         EngineStatus.WAITING_NEXT_PAGE -> when {
-            pageNumber != null -> "$pageNumber ページは撮りました。次のページへ"
-            justCaptured -> "撮りました。次のページへ"
-            else -> "次のページを待っています"
+            pageNumber != null -> "$pageNumber ページを撮影しました"
+            justCaptured -> "撮影しました"
+            else -> "次のページを待機中"
         }
-        EngineStatus.NOT_A_PAGE -> "ページを映してください"
+        EngineStatus.NOT_A_PAGE -> "ページを検出できません"
     }
 
     private fun side(s: Side) = when (s) {
@@ -36,11 +36,11 @@ object Texts {
     fun warning(w: PhotoWarnings): String {
         val parts = ArrayList<String>()
         if (w.cut.isNotEmpty()) {
-            val sides = listOf(Side.LEFT, Side.RIGHT, Side.TOP, Side.BOTTOM).filter { it in w.cut }.joinToString("と") { side(it) }
-            parts += "${sides}の端に文字がかかっています"
+            val sides = listOf(Side.LEFT, Side.RIGHT, Side.TOP, Side.BOTTOM).filter { it in w.cut }.joinToString("・") { side(it) }
+            parts += "${sides}端で文字が見切れています"
         }
-        if (w.blurred) parts += if (parts.isEmpty()) "ぶれているかもしれません" else "ぶれも"
-        if (w.dark) parts += if (parts.isEmpty()) "暗すぎます。ライトを点けるか、明るい場所で" else "暗さも"
+        if (w.blurred) parts += if (parts.isEmpty()) "ブレている可能性があります" else "ブレあり"
+        if (w.dark) parts += if (parts.isEmpty()) "暗すぎます。ライトを点けるか、明るい場所で撮影してください" else "暗い"
         return when (parts.size) {
             0 -> ""
             1 -> parts[0]
@@ -49,13 +49,13 @@ object Texts {
     }
 
     fun syncProblem(p: SyncProblem): String = when (p) {
-        SyncProblem.NO_KEY -> "取り込み箱の鍵がまだ入っていません"
-        SyncProblem.BAD_KEY -> "鍵が無効です。入れ直してください"
-        SyncProblem.NO_PERMISSION -> "この鍵では取り込み箱に書き込めません"
-        SyncProblem.NOT_FOUND -> "取り込み箱が見つかりません"
-        SyncProblem.OFFLINE -> "つながっていません。つながったら上げます"
-        SyncProblem.BUSY -> "混み合っています。少し待って上げます"
-        SyncProblem.OTHER -> "上げられませんでした。あとでもう一度試します"
+        SyncProblem.NO_KEY -> "アクセストークンが未設定です"
+        SyncProblem.BAD_KEY -> "トークンが無効です。再設定してください"
+        SyncProblem.NO_PERMISSION -> "このトークンにはリポジトリへの書き込み権限がありません"
+        SyncProblem.NOT_FOUND -> "リポジトリが見つかりません"
+        SyncProblem.OFFLINE -> "オフラインです。接続が回復したらアップロードします"
+        SyncProblem.BUSY -> "サーバーが混雑しています。しばらくしてからリトライします"
+        SyncProblem.OTHER -> "アップロードに失敗しました。後でリトライします"
     }
 
     private val TIME = DateTimeFormatter.ofPattern("H:mm")

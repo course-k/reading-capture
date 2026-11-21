@@ -205,9 +205,9 @@ class SyncRunner(
     private fun message(photos: Int, notes: Int, deletes: Int): String {
         val parts = ArrayList<String>()
         if (photos > 0) parts += "写真 $photos 枚"
-        if (notes > 0) parts += "言葉 $notes 件"
-        if (deletes > 0) parts += "取り消し $deletes 件"
-        return "取り込み: " + parts.joinToString("・")
+        if (notes > 0) parts += "メモ $notes 件"
+        if (deletes > 0) parts += "削除 $deletes 件"
+        return "アップロード: " + parts.joinToString("、")
     }
 
     private fun Note.toFile() = NoteFile(

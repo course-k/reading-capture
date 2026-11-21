@@ -49,20 +49,20 @@ class Haptics(context: Context, private val settings: Settings) {
 
     /** あらかじめ用意されている振動（Android の決まった型）。 */
     val presets: List<HapticChoice> = listOf(
-        HapticChoice("preset:CLICK", "クリック", 120),
-        HapticChoice("preset:HEAVY_CLICK", "強いクリック", 140),
-        HapticChoice("preset:DOUBLE_CLICK", "ダブルクリック", 300),
-        HapticChoice("preset:TICK", "チッ（軽い）", 100),
+        HapticChoice("preset:CLICK", "Click", 120),
+        HapticChoice("preset:HEAVY_CLICK", "Heavy click", 140),
+        HapticChoice("preset:DOUBLE_CLICK", "Double click", 300),
+        HapticChoice("preset:TICK", "Tick", 100),
     )
 
     /** 組み合わせ用の振動の部品。この端末が対応しているものだけ。 */
     val primitives: List<HapticChoice> = listOf(
-        Triple(VibrationEffect.Composition.PRIMITIVE_THUD, "prim:THUD", "ドン"),
-        Triple(VibrationEffect.Composition.PRIMITIVE_QUICK_FALL, "prim:QUICK_FALL", "すっと弱まる"),
-        Triple(VibrationEffect.Composition.PRIMITIVE_QUICK_RISE, "prim:QUICK_RISE", "すっと強まる"),
-        Triple(VibrationEffect.Composition.PRIMITIVE_SLOW_RISE, "prim:SLOW_RISE", "ゆっくり強まる"),
-        Triple(VibrationEffect.Composition.PRIMITIVE_SPIN, "prim:SPIN", "回る感じ"),
-        Triple(VibrationEffect.Composition.PRIMITIVE_LOW_TICK, "prim:LOW_TICK", "低いチッ"),
+        Triple(VibrationEffect.Composition.PRIMITIVE_THUD, "prim:THUD", "Thud"),
+        Triple(VibrationEffect.Composition.PRIMITIVE_QUICK_FALL, "prim:QUICK_FALL", "Quick fall"),
+        Triple(VibrationEffect.Composition.PRIMITIVE_QUICK_RISE, "prim:QUICK_RISE", "Quick rise"),
+        Triple(VibrationEffect.Composition.PRIMITIVE_SLOW_RISE, "prim:SLOW_RISE", "Slow rise"),
+        Triple(VibrationEffect.Composition.PRIMITIVE_SPIN, "prim:SPIN", "Spin"),
+        Triple(VibrationEffect.Composition.PRIMITIVE_LOW_TICK, "prim:LOW_TICK", "Low tick"),
     ).filter { vibrator.areAllPrimitivesSupported(it.first) }.map { HapticChoice(it.second, it.third, 400) }
 
     private val all: List<HapticChoice> get() = lengths + presets + primitives

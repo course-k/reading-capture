@@ -225,7 +225,7 @@ class CaptureController(
                 diag.log("camera_bound", "photoW" to res?.width, "photoH" to res?.height, "analysisW" to analysis.resolutionInfo?.resolution?.width, "analysisH" to analysis.resolutionInfo?.resolution?.height)
             } catch (e: Exception) {
                 diag.log("camera_error", "error" to e.toString())
-                _ui.update { it.copy(cameraReady = false, cameraError = "カメラを使えません") }
+                _ui.update { it.copy(cameraReady = false, cameraError = "カメラを起動できません") }
             }
         }, mainExecutor)
     }
@@ -385,7 +385,7 @@ class CaptureController(
         val showNumbers = settings.showNumbers
         val numbers = if (showNumbers && now - lastNumbersAt > 200) {
             lastNumbersAt = now
-            "映像 %.3f / %.0f  スマホ %.2f  鮮明さ %.0f".format(m.cellFraction, m.cellMax, m.deviceMotion ?: -1f, m.sharpness)
+            "フレーム差分 %.3f / %.0f  ジャイロ %.2f  シャープネス %.0f".format(m.cellFraction, m.cellMax, m.deviceMotion ?: -1f, m.sharpness)
         } else if (!showNumbers) null else current.numbers
         if (result.status != current.status || result.pageNumber != current.pageNumber || numbers != current.numbers) {
             _ui.update { it.copy(status = result.status, settleProgress = result.settleProgress, pageNumber = result.pageNumber, numbers = numbers) }

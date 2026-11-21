@@ -115,7 +115,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
         LazyColumn(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 20.dp), state = listState) {
             item {
                 Text(
-                    if (notes.isEmpty()) "この節で話したことは、ここに並びます" else "この節で話したこと",
+                    if (notes.isEmpty()) "この節のメモはまだありません" else "この節のメモ",
                     style = Type.tiny, color = c.text3, modifier = Modifier.padding(top = 14.dp, bottom = 10.dp),
                 )
             }
@@ -130,18 +130,18 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                         Text(note.text, style = Type.body, color = c.text)
                         val waiting = note.state == NoteState.PENDING
                         Text(
-                            Texts.time(note.spokenAt) + if (waiting) " ・ これから上げます" else "",
+                            Texts.time(note.spokenAt) + if (waiting) " ・ アップロード待ち" else "",
                             style = Type.tiny, color = if (waiting) c.accent else c.text3, modifier = Modifier.padding(top = 2.dp),
                         )
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.raised) {
                         if (navigator != null) {
-                            DropdownMenuItem(text = { Text("節を変える", color = c.text) }, onClick = {
+                            DropdownMenuItem(text = { Text("節を変更", color = c.text) }, onClick = {
                                 menu = false
                                 movingNote = note
                             })
                         }
-                        DropdownMenuItem(text = { Text("消す", color = c.danger) }, onClick = {
+                        DropdownMenuItem(text = { Text("削除", color = c.danger) }, onClick = {
                             menu = false
                             container.db.deleteNote(note.id)
                             container.sync.kick()
@@ -176,7 +176,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                 TextAction("›", onClick = { next?.let { select(it) } }, enabled = next != null, style = Type.body.copy(fontSize = Type.body.fontSize * 1.5f))
             } else {
                 Text(
-                    "この本の目次は、まだありません。章・節なしで残します",
+                    "この本の目次が未登録のため、章・節なしで保存します",
                     style = Type.small, color = c.text3, modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
                 )
             }
@@ -194,7 +194,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                 lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 3, maxHeightInLines = 8),
                 modifier = Modifier.fillMaxWidth(),
                 decorator = { inner ->
-                    if (field.text.isEmpty()) Text("ここに話す", style = Type.body, color = c.text3)
+                    if (field.text.isEmpty()) Text("メモを入力（音声入力可）", style = Type.body, color = c.text3)
                     inner()
                 },
             )
@@ -202,7 +202,7 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
         Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f))
             PrimaryButton(
-                "残す",
+                "保存",
                 enabled = field.text.isNotBlank(),
                 onClick = {
                     val now = System.currentTimeMillis()
@@ -227,14 +227,14 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
     }
 
     if (showToc && navigator != null) {
-        TocSheet(navigator, current = position, title = "章・節を選ぶ", onDismiss = { showToc = false }) {
+        TocSheet(navigator, current = position, title = "章・節を選択", onDismiss = { showToc = false }) {
             select(it)
             showToc = false
         }
     }
     val moving = movingNote
     if (moving != null && navigator != null) {
-        TocSheet(navigator, current = navigator.find(moving.chapterId, moving.sectionId), title = "入れる節を選ぶ", onDismiss = { movingNote = null }) { p ->
+        TocSheet(navigator, current = navigator.find(moving.chapterId, moving.sectionId), title = "移動先の節を選択", onDismiss = { movingNote = null }) { p ->
             val ch = navigator.chapter(p)
             val se = navigator.section(p)
             container.db.moveNote(moving.id, ch.id, ch.title, se?.id, se?.title)

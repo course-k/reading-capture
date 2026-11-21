@@ -62,14 +62,14 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
         }
         Text("設定", style = Type.bodyStrong.copy(fontSize = Type.body.fontSize * 1.25f), color = c.text, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp))
 
-        Heading("取り込み箱")
-        Label("置き場（持ち主/リポジトリ）")
-        Field(repo, { repo = it }, placeholder = "例: name/reading-inbox")
-        Label(if (hasToken) "鍵（入っています。入れ直すときだけ貼ってください）" else "鍵")
-        Field(token, { token = it }, placeholder = if (hasToken) "••••••••" else "github_pat_ から始まる文字", secret = true)
+        Heading("GitHub 連携")
+        Label("リポジトリ（owner/repo）")
+        Field(repo, { repo = it }, placeholder = "例: owner/reading-inbox")
+        Label(if (hasToken) "アクセストークン（設定済み。変更するときだけ入力）" else "アクセストークン")
+        Field(token, { token = it }, placeholder = if (hasToken) "••••••••" else "github_pat_…", secret = true)
         Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             PrimaryButton(
-                if (checking) "確かめています" else "入れて、つながるか確かめる",
+                if (checking) "接続テスト中…" else "保存して接続テスト",
                 enabled = !checking && InboxConfig.parseRepo(repo) != null && (token.isNotBlank() || hasToken),
                 onClick = {
                     checking = true
@@ -79,7 +79,7 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
                             runCatching {
                                 container.settings.inboxRepo = repo
                                 if (token.isNotBlank()) container.vault.save(token.trim())
-                                val client = container.syncRunner.clientOrNull() ?: error("鍵を読めません")
+                                val client = container.syncRunner.clientOrNull() ?: error("トークンを読み込めません")
                                 client.checkAccess()
                                 container.syncRunner.refreshBooks(force = true)
                             }
@@ -88,14 +88,14 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
                         hasToken = container.vault.hasToken
                         token = ""
                         result = outcome.fold(
-                            onSuccess = { true to "つながりました。書き込めます" },
+                            onSuccess = { true to "接続に成功しました（書き込み可）" },
                             onFailure = { e ->
                                 false to when (e) {
-                                    is InboxException.Unauthorized -> "鍵が無効です。貼り間違いか、期限切れかもしれません"
-                                    is InboxException.NoPermission -> "鍵は通りましたが、書き込めません。Contents を Read and write にしてください"
-                                    is InboxException.NotFound -> "取り込み箱が見つかりません。置き場の名前と、鍵の対象のリポジトリを確かめてください"
-                                    is InboxException.Network -> "つながりません。電波を確かめてください"
-                                    else -> "確かめられませんでした（${e.message ?: "理由不明"}）"
+                                    is InboxException.Unauthorized -> "トークンが無効です。入力ミスか、有効期限切れの可能性があります"
+                                    is InboxException.NoPermission -> "認証は成功しましたが、書き込み権限がありません。Contents を Read and write に設定してください"
+                                    is InboxException.NotFound -> "リポジトリが見つかりません。リポジトリ名と、トークンの対象リポジトリを確認してください"
+                                    is InboxException.Network -> "接続できません。ネットワーク接続を確認してください"
+                                    else -> "接続テストに失敗しました（${e.message ?: "原因不明"}）"
                                 }
                             },
                         )
@@ -111,34 +111,34 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
             Text(text, style = Type.small, color = if (ok) c.accent else c.warn, modifier = Modifier.padding(horizontal = 22.dp))
         }
         if (hasToken) {
-            TextAction("鍵をこのスマホから消す", onClick = {
+            TextAction("トークンを端末から削除", onClick = {
                 container.vault.clear()
                 hasToken = false
-                result = false to "鍵を消しました。上げるには、もう一度入れてください"
+                result = false to "トークンを削除しました。アップロードするには再設定してください"
             }, color = c.danger, modifier = Modifier.padding(horizontal = 12.dp))
         }
-        Note("鍵の作り方: GitHub の Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token。Repository access は Only select repositories で取り込み箱だけを選び、Permissions の Contents を Read and write にします。")
-        Note("鍵は、このスマホの中に暗号化して置きます。スマホを失くしたら、GitHub の同じ画面で鍵を消してください。")
+        Note("トークンの作成手順: GitHub の Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token。Repository access は Only select repositories で対象のリポジトリだけを選択し、Permissions の Contents を Read and write に設定します。")
+        Note("トークンは端末内に暗号化して保存します。端末を紛失した場合は、GitHub の同じ画面でトークンを削除してください。")
 
-        Heading("上げる状況")
+        Heading("アップロード状況")
         val line = buildString {
-            append("まだ ${counts.pending}")
-            append(" ・ 今日上げた ${counts.uploadedToday}")
+            append("未アップロード ${counts.pending}")
+            append(" ・ 今日のアップロード ${counts.uploadedToday}")
         }
         Text(line, style = Type.body, color = c.text, modifier = Modifier.padding(horizontal = 22.dp))
         status.problem?.let { Text(Texts.syncProblem(it), style = Type.small, color = c.warn, modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp)) }
         Row(Modifier.padding(horizontal = 12.dp)) {
-            TextAction(if (status.running) "上げています" else "いま上げる", onClick = {
+            TextAction(if (status.running) "アップロード中…" else "今すぐアップロード", onClick = {
                 container.syncRunner.clearProblem()
                 container.sync.kick()
             }, color = c.accent, enabled = !status.running)
         }
-        Note("写真と話した言葉は、取り込み箱に上がったと確かめられるまで、このスマホから消しません。電波が無いときはためておき、つながったら上げます。")
+        Note("写真とメモは、アップロードの完了を確認するまで端末から削除しません。オフライン時は端末に保存し、接続が回復したら自動でアップロードします。")
 
-        Heading("撮れたときの振動")
-        Note("押すと鳴ります。選んだものが、撮れたときの振動になります。")
+        Heading("撮影完了時のバイブレーション")
+        Note("タップすると再生されます。選択したものが、撮影完了時のバイブレーションになります。")
         var chosen by remember { mutableStateOf(container.haptics.selected.id) }
-        for ((title, choices) in listOf("バイブ（長さ）" to container.haptics.lengths, "あらかじめある振動" to container.haptics.presets, "そのほか" to container.haptics.primitives)) {
+        for ((title, choices) in listOf("長さ指定" to container.haptics.lengths, "プリセット" to container.haptics.presets, "その他" to container.haptics.primitives)) {
             if (choices.isEmpty()) continue
             Label(title)
             for (row in choices.chunked(3)) {
@@ -165,9 +165,9 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
             }
         }
 
-        Heading("合わせ込み")
+        Heading("デバッグ")
         Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("検知の数値を「撮る」の画面に出す", style = Type.body, color = c.text, modifier = Modifier.weight(1f))
+            Text("検出の数値を撮影画面に表示", style = Type.body, color = c.text, modifier = Modifier.weight(1f))
             Switch(
                 checked = numbers,
                 onCheckedChange = {
@@ -177,10 +177,10 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
                 colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.onAccent),
             )
         }
-        Note("撮り逃しや二度撮りが続くときに、原因を探すためのものです。ふだんは切ったままで構いません。")
+        Note("撮り逃しや重複撮影が続くときの原因調査用です。通常はオフのままで構いません。")
 
         Spacer(Modifier.height(24.dp))
-        Text("読書の取り込み ${BuildConfig.VERSION_NAME}", style = Type.tiny, color = c.text3, modifier = Modifier.padding(horizontal = 22.dp))
+        Text("Reading Capture ${BuildConfig.VERSION_NAME}", style = Type.tiny, color = c.text3, modifier = Modifier.padding(horizontal = 22.dp))
     }
 }
 
