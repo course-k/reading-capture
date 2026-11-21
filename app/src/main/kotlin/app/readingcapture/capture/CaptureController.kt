@@ -254,14 +254,12 @@ class CaptureController(
             engine.onLastDeleted()
             saveReference()
         }
-        haptics.tick()
     }
 
     /** 撮り直す。直前の 1 枚を消し、次に止まったら同じページでも撮る。 */
     fun retake(photo: Photo) {
         delete(photo)
         analysisExecutor.execute { engine.armRetake(SystemClock.elapsedRealtime()) }
-        haptics.tick()
         diag.log("retake", "id" to photo.id)
     }
 

@@ -144,7 +144,6 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                         DropdownMenuItem(text = { Text("消す", color = c.danger) }, onClick = {
                             menu = false
                             container.db.deleteNote(note.id)
-                            container.haptics.tick()
                             container.sync.kick()
                         })
                     }
@@ -221,7 +220,6 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
                     )
                     field.clearText()
                     container.settings.setDraft(book.id, "")
-                    container.haptics.tick()
                     container.sync.kick()
                 },
             )
@@ -240,7 +238,6 @@ fun SpeakScreen(container: AppContainer, book: BookEntry) {
             val ch = navigator.chapter(p)
             val se = navigator.section(p)
             container.db.moveNote(moving.id, ch.id, ch.title, se?.id, se?.title)
-            container.haptics.tick()
             container.sync.kick()
             movingNote = null
         }

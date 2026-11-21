@@ -109,7 +109,6 @@ private fun PhotoViewer(container: AppContainer, photo: Photo, onBack: () -> Uni
             Box(Modifier.weight(1f))
             TextAction("この 1 枚を消す", onClick = {
                 container.capture.delete(photo)
-                container.haptics.tick()
                 onBack()
             }, color = c.danger)
         }

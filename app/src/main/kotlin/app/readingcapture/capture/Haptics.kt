@@ -21,7 +21,8 @@ data class HapticChoice(
  *
  * - 撮れた: 短いバイブ 1 回（0.04 秒）。設定の「撮れたときの振動」で選び直せる
  * - 切れ・ぶれ・暗い: 長めに 2 回（0.3 秒ずつ）
- * - 消した・残した: さらに短く 1 回（0.02 秒）
+ *
+ * 「消す」「残す」を押したときは振動しない（持ち主: 「別にいらないです」）。
  *
  * 最初は、キーを押したときと同じ種類の軽い振動にしていたが、持ち主が思っていた「バイブ」ではなかった。
  * 次に 0.2 秒のバイブにしたが、長かった（実際には 0.29 秒鳴っていた）。
@@ -107,13 +108,6 @@ class Haptics(context: Context, private val settings: Settings) {
         val amplitudes = intArrayOf(0, 255, 0, 255)
         vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1), attributes)
         return 780
-    }
-
-    /** 消した・残した・節を変えた。 */
-    fun tick(): Long {
-        // 撮れたときの振動（0.04 秒）と紛れないよう、さらに短くする
-        vibrator.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE), attributes)
-        return 20
     }
 
     companion object {
