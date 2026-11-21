@@ -135,6 +135,36 @@ fun SettingsScreen(container: AppContainer, counts: SyncCounts, onBack: () -> Un
         }
         Note("写真と話した言葉は、取り込み箱に上がったと確かめられるまで、このスマホから消しません。電波が無いときはためておき、つながったら上げます。")
 
+        Heading("撮れたときの振動")
+        Note("押すと鳴ります。選んだものが、撮れたときの振動になります。")
+        var chosen by remember { mutableStateOf(container.haptics.selected.id) }
+        for ((title, choices) in listOf("バイブ（長さ）" to container.haptics.lengths, "あらかじめある振動" to container.haptics.presets, "そのほか" to container.haptics.primitives)) {
+            if (choices.isEmpty()) continue
+            Label(title)
+            for (row in choices.chunked(3)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    for (choice in row) {
+                        val on = chosen == choice.id
+                        Box(
+                            Modifier.weight(1f).padding(horizontal = 4.dp).clip(RoundedCornerShape(12.dp))
+                                .background(if (on) c.accentBg else c.sunken)
+                                .quietClickable {
+                                    container.haptics.play(choice)
+                                    container.settings.capturedHaptic = choice.id
+                                    chosen = choice.id
+                                }
+                                .padding(vertical = 14.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(choice.label, style = if (on) Type.labelStrong else Type.label, color = if (on) c.accent else c.text)
+                        }
+                    }
+                    // 行の残りを空けておく（最後の行でボタンが広がらないように）
+                    repeat(3 - row.size) { Box(Modifier.weight(1f).padding(horizontal = 4.dp)) }
+                }
+            }
+        }
+
         Heading("合わせ込み")
         Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("検知の数値を「撮る」の画面に出す", style = Type.body, color = c.text, modifier = Modifier.weight(1f))

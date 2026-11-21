@@ -40,7 +40,7 @@ class AppContainer(app: Application) {
     val vault = TokenVault(app)
     val store = PhotoStore(app)
     val books = BookRepository(app, settings)
-    val haptics = Haptics(app)
+    val haptics = Haptics(app, settings)
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)

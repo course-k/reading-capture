@@ -56,6 +56,11 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_TORCH, false)
         set(value) = prefs.edit().putBoolean(KEY_TORCH, value).apply()
 
+    /** 撮れたときの振動（[app.readingcapture.capture.Haptics] の選択肢の名前） */
+    var capturedHaptic: String
+        get() = prefs.getString(KEY_HAPTIC, null) ?: "len:200"
+        set(value) = prefs.edit().putString(KEY_HAPTIC, value).apply()
+
     var showNumbers: Boolean
         get() = prefs.getBoolean(KEY_NUMBERS, false)
         set(value) = prefs.edit().putBoolean(KEY_NUMBERS, value).apply()
@@ -69,5 +74,6 @@ class Settings(context: Context) {
         const val KEY_ETAG = "etag:"
         const val KEY_TORCH = "torch"
         const val KEY_NUMBERS = "numbers"
+        const val KEY_HAPTIC = "captured-haptic"
     }
 }
